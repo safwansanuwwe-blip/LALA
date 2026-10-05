@@ -1,0 +1,518 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aimerise — One Year (Vertical)</title>
+<style>
+  @font-face { font-family: 'MS'; font-weight: 300; src: url(fonts/montserrat-latin-300-normal.woff2); }
+  @font-face { font-family: 'MS'; font-weight: 500; src: url(fonts/montserrat-latin-500-normal.woff2); }
+  @font-face { font-family: 'MS'; font-weight: 600; src: url(fonts/montserrat-latin-600-normal.woff2); }
+  @font-face { font-family: 'IS'; font-style: italic; src: url(fonts/instrument-serif-latin-400-italic.woff2); }
+  @font-face { font-family: 'JM'; font-weight: 500; src: url(fonts/jetbrains-mono-latin-500-normal.woff2); }
+  html, body { margin: 0; background: #040A18; }
+  canvas { display: block; height: 100vh; width: auto; margin: 0 auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<script>
+/* ==========================================================================
+   AIMERISE MARKETING — "One Year. Thank you, everyone." — 9:16, 15s
+   Liquid-glass motion language: translucent panels that refract and blur
+   the living backdrop, lens their rims, catch a specular edge light, and
+   move on damped springs so shapes overshoot and settle like liquid.
+   Two layers per frame: BACK (backdrop, brand lines, wordmark) is what the
+   glass refracts; FRONT (glass + type) sits on top. 120 BPM beat grid.
+   ========================================================================== */
+const W = 1080, H = 1920, FPS = 60, DURATION = 15;
+const C = { navy: '#040A18', white: '#F4F7FF', grey: '#8C97AD', blue: [26, 109, 255], cyan: [31, 224, 207] };
+const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const mix = (a, b, k) => [0, 1, 2].map(i => Math.round(a[i] + (b[i] - a[i]) * k));
+
+const out = document.getElementById('c');
+const octx = out.getContext('2d');
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const backC = mk(W, H), frontC = mk(W, H), blurC = mk(W / 8, H / 8), softC = mk(W / 3, H / 3);
+const backX = backC.getContext('2d'), frontX = frontC.getContext('2d');
+const blurX = blurC.getContext('2d'), softX = softC.getContext('2d');
+let ctx = backX;   // helpers draw into whichever layer is active
+
+/* ---------- easing, springs & math ---------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const p = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, x) => a + (b - a) * x;
+const eo = x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));
+const eio = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const ei = x => x * x * x;
+// damped spring 0→1 over `dur` seconds (≈17% overshoot, settles exactly at 1)
+const spring = (t, t0, dur = 0.8) => { const u = clamp((t - t0) / dur); return u <= 0 ? 0 : 1 - Math.exp(-6 * u) * Math.cos(3.5 * Math.PI * u); };
+const TAU = Math.PI * 2;
+function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; }
+
+/* ---------- text ---------- */
+function font(f, size, w = 500) {
+  if (f === 'IS') return `italic 400 ${size}px IS`;
+  if (f === 'JM') return `500 ${size}px JM`;
+  return `${w} ${size}px MS`;
+}
+function measure(str, o) {
+  ctx.save(); ctx.font = font(o.f || 'MS', o.size, o.w); ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(str).width; ctx.restore(); return w;
+}
+function grad(x0, x1) { const g = ctx.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, rgb(C.cyan)); g.addColorStop(1, rgb(C.blue)); return g; }
+function text(str, x, y, o = {}) {
+  ctx.save();
+  ctx.font = font(o.f || 'MS', o.size || 40, o.w);
+  ctx.textAlign = o.align || 'left';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  ctx.globalAlpha *= o.alpha ?? 1;
+  let fill = o.color || C.white;
+  if (o.gradient) {
+    const w = measure(str, o), x0 = o.align === 'center' ? x - w / 2 : o.align === 'right' ? x - w : x;
+    fill = grad(x0, x0 + w);
+  }
+  if (o.stroke) { ctx.lineWidth = o.lw || 2; ctx.strokeStyle = o.gradient ? fill : o.stroke; ctx.strokeText(str, x, y); }
+  else { ctx.fillStyle = fill; ctx.fillText(str, x, y); }
+  ctx.restore();
+}
+function reveal(str, x, y, o, k, exit = 0) {
+  if (k <= 0 || exit >= 1) return;
+  const w = measure(str, o);
+  let x0 = x; if (o.align === 'center') x0 = x - w / 2; else if (o.align === 'right') x0 = x - w;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0 - o.size, y - o.size * 1.05, w + o.size * 2, o.size * 1.4); ctx.clip();
+  text(str, x, y + (1 - eo(k)) * o.size * 1.2 - eio(exit) * o.size * 1.2, o);
+  ctx.restore();
+}
+const runsWidth = parts => parts.reduce((a, [s, o]) => a + measure(s, o), 0);
+function runs(parts, cx, y, k, exit = 0) {
+  if (k <= 0 || exit >= 1) return;
+  let x = cx - runsWidth(parts) / 2;
+  parts.forEach(([s, o], i) => { reveal(s, x, y, o, clamp(k * 1.25 - i * 0.12), exit); x += measure(s, o); });
+}
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, TAU); }
+
+/* ==========================================================================
+   LIQUID GLASS
+   ========================================================================== */
+const pill = (cx, cy, w, h, r) => ({ x: cx - w / 2, y: cy - h / 2, w: Math.max(2, w), h: Math.max(2, h), r: r ?? h / 2 });
+function shapePath(s, inset = 0) {
+  const w = s.w - inset * 2, h = s.h - inset * 2;
+  if (w <= 0 || h <= 0) return;
+  ctx.roundRect(s.x + inset, s.y + inset, w, h, Math.max(0, Math.min(s.r, w / 2 + inset, h / 2 + inset) - inset));
+}
+function glass(s, o = {}) {
+  const a = o.alpha ?? 1;
+  if (a <= 0.001 || s.w < 4 || s.h < 4) return;
+  const cx = s.x + s.w / 2, cy = s.y + s.h / 2, mag = o.mag ?? 1.12;
+  const band = Math.min(s.w, s.h) * (o.band ?? 0.2);
+  const lens = (m, src) => { ctx.translate(cx, cy); ctx.scale(m, m); ctx.translate(-cx, -cy); ctx.drawImage(src, 0, 0, W, H); };
+  ctx.save(); ctx.globalAlpha = a;
+  // soft floating shadow
+  ctx.save(); ctx.beginPath(); shapePath(s); ctx.shadowColor = 'rgba(0,3,16,0.6)'; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26; ctx.fillStyle = C.navy; ctx.fill(); ctx.restore();
+  // body: magnified, frosted backdrop
+  ctx.save(); ctx.beginPath(); shapePath(s); ctx.clip(); lens(mag, o.sharp ? backC : blurC); ctx.restore();
+  // rim: graded rings, each bending light a little more toward the edge
+  for (let k = 3; k >= 0; k--) {
+    ctx.save(); ctx.beginPath(); shapePath(s, band * k / 4); shapePath(s, band * (k + 1) / 4); ctx.clip('evenodd');
+    lens(mag * (1 + 0.34 * Math.pow(1 - k / 4, 2)), o.sharp ? backC : (k < 2 ? softC : blurC)); ctx.restore();
+  }
+  // tint, sheen and inner glow
+  ctx.save(); ctx.beginPath(); shapePath(s); ctx.clip();
+  const g = ctx.createLinearGradient(0, s.y, 0, s.y + s.h);
+  g.addColorStop(0, 'rgba(255,255,255,0.24)'); g.addColorStop(0.42, 'rgba(255,255,255,0.06)'); g.addColorStop(1, 'rgba(255,255,255,0.12)');
+  ctx.fillStyle = g; ctx.fillRect(s.x, s.y, s.w, s.h);
+  ctx.beginPath(); shapePath(s); ctx.lineWidth = band * 0.7; ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.stroke();
+  // caustic: a faint brand-coloured glint travelling along the lower rim
+  const gx = s.x + s.w * (0.5 + 0.5 * Math.sin((o.t ?? 0) * 1.3));
+  const cg = ctx.createRadialGradient(gx, s.y + s.h, 0, gx, s.y + s.h, s.w * 0.45);
+  cg.addColorStop(0, rgb(C.cyan, 0.22)); cg.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = cg; ctx.fillRect(s.x, s.y, s.w, s.h);
+  ctx.restore();
+  // specular edge light (key light from top-left)
+  ctx.beginPath(); shapePath(s);
+  const rg = ctx.createLinearGradient(s.x, s.y, s.x + s.w * 0.6, s.y + s.h);
+  rg.addColorStop(0, 'rgba(255,255,255,0.95)'); rg.addColorStop(0.28, 'rgba(255,255,255,0.18)');
+  rg.addColorStop(0.7, 'rgba(255,255,255,0.08)'); rg.addColorStop(1, 'rgba(255,255,255,0.55)');
+  ctx.strokeStyle = rg; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+}
+
+/* ==========================================================================
+   THE MARK — line blend, traced from the Aimerise logo
+   ========================================================================== */
+const N = 18, M = 200, MARK_C = [386, 382];
+function chaikin(pts, it) {
+  for (let k = 0; k < it; k++) {
+    const o = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      o.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    pts = o;
+  }
+  return pts;
+}
+function resample(poly) {
+  const segs = []; let total = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    segs.push([a, b, l]); total += l;
+  }
+  const res = [];
+  for (let j = 0; j < M; j++) {
+    let d = j / M * total, s = 0;
+    while (d > segs[s][2]) { d -= segs[s][2]; s++; }
+    const [a, b, l] = segs[s], k = d / l;
+    res.push([a[0] + (b[0] - a[0]) * k - MARK_C[0], a[1] + (b[1] - a[1]) * k - MARK_C[1]]);
+  }
+  return res;
+}
+const TRI = resample([[252, 60], [702, 402], [195, 529]]);
+const BLOB = resample(chaikin([[105, 290], [350, 192], [448, 322], [505, 480], [455, 625], [230, 710], [62, 675], [100, 455]], 3));
+const BLOB_OFF = Math.round(M * 0.12);
+const KS = Array.from({ length: N }, (_, i) => { const x = i / (N - 1); return x * x * (3 - 2 * x) * 0.7 + x * 0.3; });
+const COLORS = Array.from({ length: N }, (_, i) => mix(C.blue, C.cyan, i / (N - 1)));
+function logoPt(i, j) { const k = KS[i], a = TRI[j % M], b = BLOB[(j + BLOB_OFF) % M]; return [lerp(a[0], b[0], k), lerp(a[1], b[1], k)]; }
+function wavePt(i, j, t, cy = H / 2, amp = 95) {
+  const s = j / M;
+  return [lerp(-140, W + 140, s), cy + (i - (N - 1) / 2) * 12 + Math.sin(s * TAU * 1.1 + t * 2.2 + i * 0.22) * amp * (0.6 + 0.4 * Math.sin(s * Math.PI))];
+}
+function risePt(i, j, t) {
+  const s = j / M;
+  return [W / 2 + (i - (N - 1) / 2) * 15 + Math.sin(s * TAU * 1.6 - t * 4 + i * 0.25) * 80 * Math.sin(s * Math.PI), lerp(H + 160, -160, s)];
+}
+function drawLines(ptFn, o = {}) {
+  const alpha = o.alpha ?? 1, lw = o.lw ?? 2.2;
+  if (alpha <= 0) return;
+  const end = Math.max(1, Math.floor((o.frac ?? 1) * M));
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (let pass = 0; pass < 2; pass++) for (let i = 0; i < N; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= end; j++) { const q = ptFn(i, j); j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
+    ctx.strokeStyle = rgb(COLORS[i], pass ? alpha * 0.95 : alpha * 0.12);
+    ctx.lineWidth = pass ? lw : lw * 5; ctx.stroke();
+  }
+  ctx.restore();
+}
+const toScreen = (q, x, y, s, rot = 0) => { const c = Math.cos(rot), sn = Math.sin(rot); return [x + (q[0] * c - q[1] * sn) * s, y + (q[0] * sn + q[1] * c) * s]; };
+
+/* ---------- backdrop: deep navy, drifting brand-colour orbs, specks ---------- */
+function backdrop(t, glow = 1) {
+  ctx.fillStyle = C.navy; ctx.fillRect(0, 0, W, H);
+  const orbs = [[C.blue, 0.42, 520, 0.31, 0.0], [C.cyan, 0.26, 430, 0.23, 2.1], [[60, 80, 255], 0.30, 480, 0.19, 4.0]];
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  orbs.forEach(([c, a, r, sp, ph]) => {
+    const x = W / 2 + Math.sin(t * sp * 2 + ph) * 360, y = H / 2 + Math.cos(t * sp * 1.6 + ph * 1.3) * 640;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, rgb(c, a * glow)); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  });
+  ctx.restore();
+  const rr = rng(5);
+  for (let i = 0; i < 80; i++) {
+    const x = (rr() * W + t * (6 + rr() * 16)) % W, y = (rr() * H - t * (10 + rr() * 30) + H * 4) % H, s = rr();
+    ctx.fillStyle = rgb(s > 0.5 ? C.cyan : C.white, 0.08 + 0.16 * s * (0.5 + 0.5 * Math.sin(t * 3 + i)));
+    circle(x, y, 1 + s * 1.6); ctx.fill();
+  }
+}
+
+/* ---------- lockup layout ---------- */
+const L = {};
+function layout() {
+  ctx = backX;
+  L.mx = W / 2; L.my = 790; L.ms = 0.58;
+  L.wm = { f: 'MS', w: 500, size: 94, ls: 40 };
+  L.ww = measure('AIMERISE', L.wm) - L.wm.ls;
+  L.wx = W / 2 - L.ww / 2; L.wy = 1150;
+  L.mk = { f: 'MS', w: 500, size: 21 };
+  const raw = measure('MARKETING', { ...L.mk, ls: 0 }) ;
+  L.mk.ls = (L.ww * 0.82 - raw) / 8;
+  L.mkw = raw + L.mk.ls * 8;
+}
+
+/* ==========================================================================
+   SCENES — each has back(t) and front(t)
+   ========================================================================== */
+const S1 = { // 0–2.5 · lines flow in and lock into the mark
+  back(t) {
+    backdrop(t, p(t, 0, 1.8));
+    const m = eio(p(t, 0.85, 2.0)), rot = (1 - m) * -0.6;
+    drawLines((i, j) => {
+      const w = wavePt(i, j, t), l = toScreen(logoPt(i, j), W / 2, 900, 0.95, rot);
+      return [lerp(w[0], l[0], m), lerp(w[1], l[1], m)];
+    }, { frac: eo(p(t, 0, 1.0)) });
+    if (t > 2.0) { const k = p(t, 2.0, 2.6); ctx.strokeStyle = rgb(C.cyan, (1 - k) * 0.8); ctx.lineWidth = 3 * (1 - k) + 0.5; circle(W / 2, 900, lerp(220, 760, eo(k))); ctx.stroke(); }
+  },
+  front(t) {
+    const k = spring(t, 0.35, 0.9), ex = ei(p(t, 2.2, 2.45));
+    const lab = { f: 'JM', size: 24, ls: 6 };
+    const w = measure('ONE YEAR AGO, WE TOOK AIM.', lab) + 90;
+    glass(pill(W / 2, 1560, lerp(76, w, k) * (1 - ex), 76 * (1 - ex)), { alpha: p(t, 0.3, 0.45), t });
+    text('ONE YEAR AGO, WE TOOK AIM.', W / 2 + 3, 1569, { ...lab, align: 'center', alpha: p(t, 0.6, 0.9) * (1 - p(t, 2.15, 2.3)) });
+  },
+};
+
+const S2 = { // 2.5–5 · mark rises; a glass card springs up: 1 YEAR / DAY 365; zoom through
+  mark(t) {
+    const u = t - 2.5, move = eio(p(u, 0, 0.6)), zoom = Math.pow(p(u, 2.05, 2.5), 2.6);
+    const hole = [-56, 40];
+    let x = W / 2, y = lerp(900, 500, move), s = lerp(0.95, 0.62, move) * lerp(1, 30, zoom);
+    x = lerp(x, W / 2 - hole[0] * s, zoom); y = lerp(y, H / 2 - hole[1] * s, zoom);
+    return { x, y, s, zoom };
+  },
+  back(t) {
+    backdrop(t);
+    const m = this.mark(t);
+    drawLines((i, j) => wavePt(i, j, t, 1180, 120), { alpha: 0.8 * (1 - p(t, 4.6, 4.9)), frac: eo(p(t, 2.6, 3.4)) });
+    drawLines((i, j) => toScreen(logoPt(i, j), m.x, m.y, m.s, Math.sin((t - 2.5) * 2) * 0.03 * (1 - m.zoom)), { lw: 2.2 * (1 + m.zoom * 4) });
+  },
+  front(t) {
+    const u = t - 2.5;
+    const k = spring(t, 2.75, 0.9), ex = ei(p(u, 1.85, 2.15));
+    const cw = lerp(160, 900, k), ch = lerp(160, 640, spring(t, 2.8, 0.95));
+    const cy = 1220 + ex * 500;
+    glass(pill(W / 2, cy, cw, ch, 64), { alpha: p(t, 2.7, 2.85) * (1 - ex), t });
+    ctx.save(); ctx.globalAlpha = (1 - ex);
+    const ox = 140, base = cy + 230;
+    const k1 = eo(p(u, 0.45, 1.0));
+    ctx.save(); ctx.beginPath(); ctx.rect(ox - 40, base - 520 * k1, 360, 520 * k1 + 40); ctx.clip();
+    text('1', ox, base, { size: 540, w: 300, stroke: true, gradient: true, lw: 5 });
+    ctx.restore();
+    const cx = 500;
+    reveal('YEAR', cx, cy - 120, { size: 104, w: 600, ls: 22 }, p(u, 0.55, 1.0));
+    reveal('of aiming', cx, cy - 10, { f: 'IS', size: 96 }, p(u, 0.65, 1.1));
+    reveal('higher.', cx + 2, cy + 85, { f: 'IS', size: 96, gradient: true }, p(u, 0.75, 1.2));
+    const day = Math.round(lerp(1, 365, eio(p(u, 0.45, 1.85)))), ca = p(u, 0.5, 0.8);
+    text('DAY', cx, cy + 185, { f: 'JM', size: 24, color: C.grey, ls: 6, alpha: ca });
+    text(String(day).padStart(3, '0'), cx + 90, cy + 185, { f: 'JM', size: 24, color: rgb(C.cyan), ls: 6, alpha: ca });
+    text('/ 365', cx + 175, cy + 185, { f: 'JM', size: 24, color: C.grey, ls: 6, alpha: ca });
+    ctx.fillStyle = 'rgba(244,247,255,0.14)'; ctx.fillRect(cx, cy + 212, 400, 3);
+    ctx.fillStyle = grad(cx, cx + 400); ctx.fillRect(cx, cy + 212, 400 * (day / 365) * ca, 3);
+    ctx.restore();
+  },
+};
+
+const MSo = { f: 'MS', w: 300, size: 58 }, ISo = { f: 'IS', size: 76, gradient: true };
+const THANKS = [
+  [[['to every ', MSo], ['client', ISo]], [['who trusted us,', MSo]]],
+  [[['every ', MSo], ['partner', ISo]], [['who built with us,', MSo]]],
+  [[['every ', MSo], ['teammate', ISo]], [['who made it happen,', MSo]]],
+  [[['and ', MSo], ['everyone', ISo]], [['who rose with us.', MSo]]],
+];
+const S3 = { // 5–10 · Thank you — a liquid card that reshapes for every line
+  back(t) {
+    backdrop(t, 0.9);
+    const toRise = eio(p(t, 9.5, 10.2));
+    drawLines((i, j) => {
+      const w = wavePt(i, j, t, 1180, 120), r = risePt(i, j, t);
+      return [lerp(w[0], r[0], toRise), lerp(w[1], r[1], toRise)];
+    }, { alpha: 0.8 * p(t, 5, 5.3) });
+    if (t < 5.35) { ctx.fillStyle = rgb(C.cyan, 0.28 * (1 - (t - 5) / 0.35)); ctx.fillRect(0, 0, W, H); }
+  },
+  cardW(t) {
+    const widths = THANKS.map(([a, b]) => Math.max(runsWidth(a), runsWidth(b)) + 150);
+    let w = lerp(150, widths[0], spring(t, 5.85, 0.85));
+    for (let i = 1; i < 4; i++) w = lerp(w, widths[i], spring(t, 5.9 + i, 0.75));
+    return w;
+  },
+  front(t) {
+    const u = t - 5, exitAll = p(u, 4.55, 4.9);
+    // "Thank you." blooms letter by letter, then lifts
+    const lift = eio(p(u, 0.8, 1.2));
+    const ty = lerp(1010, 720, lift), ts = lerp(1, 0.78, lift);
+    const o = { f: 'IS', size: 220 }, word = 'Thank you.', ww = measure(word, o);
+    ctx.save(); ctx.translate(W / 2, ty); ctx.scale(ts, ts);
+    let x = -ww / 2;
+    word.split('').forEach((ch, i) => {
+      const k = eo(p(u, 0.05 + i * 0.045, 0.55 + i * 0.045));
+      text(ch, x, (1 - k) * 60 - eio(exitAll) * 80, { ...o, color: i === 9 ? rgb(C.cyan) : C.white, alpha: k * (1 - exitAll) });
+      x += measure(ch, o);
+    });
+    ctx.restore();
+    // the liquid card
+    const appear = spring(t, 5.85, 0.85), shrink = ei(p(u, 4.5, 4.9));
+    const cw = this.cardW(t) * (1 - shrink * 0.85), chh = lerp(150, 310, appear) * (1 - shrink * 0.6);
+    glass(pill(W / 2, 1160, cw, chh, 70), { alpha: p(t, 5.8, 5.95) * (1 - shrink), t });
+    THANKS.forEach(([r1, r2], i) => {
+      const t0 = 1.0 + i, last = i === 3;
+      const exit = last ? exitAll : p(u, t0 + 0.88, t0 + 1.05);
+      runs(r1, W / 2, 1140, p(u, t0 + 0.05, t0 + 0.5), exit);
+      runs(r2, W / 2, 1222, p(u, t0 + 0.12, t0 + 0.57), exit);
+    });
+    // progress dots in a tiny glass pill
+    const dk = spring(t, 6.0, 0.7) * (1 - shrink);
+    glass(pill(W / 2, 1430, 150 * dk, 46 * dk), { alpha: p(t, 5.95, 6.05) * (1 - shrink), t });
+    for (let i = 0; i < 4; i++) {
+      const on = u >= 1 + i && u < 2 + i;
+      ctx.fillStyle = on ? rgb(C.cyan) : 'rgba(244,247,255,0.35)';
+      ctx.globalAlpha = p(u, 1.0, 1.2) * (1 - shrink); circle(W / 2 - 39 + i * 26, 1430, on ? 7 : 4.5); ctx.fill(); ctx.globalAlpha = 1;
+    }
+  },
+};
+
+const S4 = { // 10–12.5 · Year one was the aim. Now, we rise.
+  back(t) {
+    backdrop(t);
+    const toLogo = eio(p(t, 12.15, 12.95));
+    drawLines((i, j) => {
+      const r = risePt(i, j, t), l = toScreen(logoPt(i, j), L.mx, L.my, L.ms, (1 - toLogo) * 0.8);
+      return [lerp(r[0], l[0], toLogo), lerp(r[1], l[1], toLogo)];
+    }, { alpha: 0.85 });
+    if (t > 11.25) {
+      const r = rng(9);
+      for (let i = 0; i < 40; i++) {
+        const st = 11.25 + r() * 0.8, life = p(t, st, st + 0.9);
+        const x = W / 2 + (r() - 0.5) * 760, y0 = H * 0.75 + r() * 300, len = 30 + r() * 70, dist = 600 + r() * 400, col = r() > 0.5 ? C.cyan : C.blue;
+        if (life <= 0 || life >= 1) continue;
+        ctx.strokeStyle = rgb(col, (1 - life) * 0.9); ctx.lineWidth = 2.5;
+        const y = y0 - eo(life) * dist; line(x, y, x, y + len);
+      }
+    }
+  },
+  front(t) {
+    const u = t - 10;
+    const a = { f: 'MS', w: 300, size: 54 }, b = { f: 'IS', size: 70, gradient: true };
+    const parts = [['Year one was the ', a], ['aim.', b]];
+    const k = spring(t, 10.05, 0.85), ex = ei(p(u, 1.1, 1.3));
+    glass(pill(W / 2, 820, lerp(110, runsWidth(parts) + 110, k) * (1 - ex), 110 * (1 - ex)), { alpha: p(t, 10, 10.12), t });
+    runs(parts, W / 2, 840, p(u, 0.2, 0.65), p(u, 1.0, 1.15));
+    const k2 = p(u, 1.25, 1.75), ex2 = p(u, 2.0, 2.35), climb = -eo(p(u, 1.25, 2.3)) * 50;
+    reveal('Now, we', W / 2, 1060 + climb, { f: 'IS', size: 190, align: 'center' }, k2, ex2);
+    reveal('rise.', W / 2, 1300 + climb, { f: 'IS', size: 270, align: 'center', gradient: true }, p(u, 1.35, 1.85), ex2);
+  },
+};
+
+const CONFETTI = (() => {
+  const r = rng(21), a = [];
+  for (let i = 0; i < 150; i++) {
+    const ang = -Math.PI / 2 + (r() - 0.5) * Math.PI * 1.6, sp = 700 + r() * 1300;
+    a.push({ vx: Math.cos(ang) * sp * 0.7, vy: Math.sin(ang) * sp, len: 16 + r() * 28, rot: r() * TAU, vr: (r() - 0.5) * 16, col: mix(C.blue, C.cyan, r()), white: r() < 0.18, delay: r() * 0.12 });
+  }
+  return a;
+})();
+const S5 = { // 12.5–15 · lockup, confetti, a glass lens glides over the wordmark
+  back(t) {
+    const u = t - 12.5;
+    backdrop(t, 1.1);
+    const toLogo = eio(p(t, 12.15, 12.95));
+    drawLines((i, j) => {
+      const r = risePt(i, j, t), l = toScreen(logoPt(i, j), L.mx, L.my, L.ms * (1 + 0.012 * Math.sin(u * 3) * toLogo), (1 - toLogo) * 0.8);
+      return [lerp(r[0], l[0], toLogo), lerp(r[1], l[1], toLogo)];
+    });
+    // wordmark lives in the back layer so the lens can refract it
+    const kw = eo(p(u, 0.25, 1.0)), extra = (1 - kw) * 30;
+    let x = L.wx - extra * 3.5;
+    'AIMERISE'.split('').forEach((ch, i) => {
+      const ki = eo(p(u, 0.25 + i * 0.04, 0.75 + i * 0.04)), o = { ...L.wm, ls: 0 };
+      text(ch, x + i * extra, L.wy, { ...o, alpha: ki });
+      text(ch, x + i * extra, L.wy, { ...o, stroke: 'rgba(120,130,150,0.9)', lw: 1.4, alpha: ki });
+      x += measure(ch, o) + L.wm.ls;
+    });
+    text('MARKETING', W / 2 - L.mkw / 2 + L.mk.ls / 2, L.wy + 72, { ...L.mk, alpha: p(u, 0.6, 1.1) * 0.85 });
+  },
+  front(t) {
+    const u = t - 12.5;
+    CONFETTI.forEach(c => {
+      const d = u - c.delay; if (d <= 0) return;
+      const x = L.mx + c.vx * d * Math.exp(-d * 1.4) * 0.9, y = L.my + c.vy * d * Math.exp(-d * 1.4) * 0.9 + 320 * d * d;
+      const a = clamp(1 - (d - 1.4) / 0.9); if (a <= 0) return;
+      ctx.save(); ctx.translate(x, y); ctx.rotate(c.rot + c.vr * d);
+      ctx.strokeStyle = c.white ? `rgba(244,247,255,${a})` : rgb(c.col, a); ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+      line(-c.len / 2, 0, c.len / 2, 0); ctx.restore();
+    });
+    // droplet → pill
+    const lo = { f: 'JM', size: 24, ls: 7 }, label = 'CELEBRATING  1  YEAR';
+    const k = spring(t, 12.6, 0.9), pw = measure(label, lo) + 90;
+    glass(pill(W / 2, 400, lerp(78, pw, k), 78), { alpha: p(t, 12.55, 12.7), t });
+    text(label, W / 2 + 4, 409, { ...lo, align: 'center', alpha: p(u, 0.4, 0.7) });
+    // thank-you line
+    reveal('Thank you,', W / 2, 1420, { f: 'IS', size: 130, align: 'center' }, p(u, 0.7, 1.15));
+    reveal('everyone.', W / 2, 1550, { f: 'IS', size: 130, align: 'center', gradient: true }, p(u, 0.8, 1.25));
+    // footer pill
+    const fo = { f: 'JM', size: 22, ls: 6 }, ft = 'AIMERISEMARKETING.COM';
+    const kf = spring(t, 13.4, 0.85), fw = measure(ft, fo) + 90;
+    glass(pill(W / 2, 1720, lerp(70, fw, kf), 70), { alpha: p(t, 13.35, 13.5), t });
+    text(ft, W / 2 + 3, 1728, { ...fo, align: 'center', alpha: p(u, 1.1, 1.4) });
+    // lens sweep across the wordmark
+    const ls = p(t, 13.75, 14.75);
+    if (ls > 0 && ls < 1) {
+      const lx = lerp(L.wx - 140, L.wx + L.ww + 140, eio(ls));
+      const r = 92 * Math.sin(Math.PI * clamp(ls * 1.25)) ** 0.4 + 0.01;
+      glass(pill(lx, L.wy - 34, r * 2, r * 2), { sharp: true, mag: 1.4, band: 0.24, t });
+    }
+  },
+};
+
+/* ==========================================================================
+   compositor
+   ========================================================================== */
+function sceneAt(t) { return t < 2.5 ? S1 : t < 5 ? S2 : t < 10 ? S3 : t < 12.5 ? S4 : S5; }
+function shake(t) {
+  let x = 0, y = 0;
+  for (const [ti, amp] of [[2.0, 6], [5.0, 6], [12.5, 10]]) {
+    const d = t - ti; if (d < 0 || d > 0.3) continue;
+    const a = amp * Math.pow(1 - d / 0.3, 2); x += Math.sin(d * 90) * a; y += Math.cos(d * 70) * a;
+  }
+  return [x, y];
+}
+function renderLayers(t) {
+  const sc = sceneAt(t), [sx, sy] = shake(t);
+  ctx = backX; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = C.navy; ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, sx, sy); ctx.globalAlpha = 1; sc.back(t);
+  // frosted copies of the backdrop for the glass to refract
+  blurX.filter = 'blur(3px) saturate(160%)'; blurX.drawImage(backC, 0, 0, blurC.width, blurC.height);
+  softX.filter = 'blur(1.2px) saturate(150%)'; softX.drawImage(backC, 0, 0, softC.width, softC.height);
+  ctx = frontX; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+  ctx.drawImage(backC, 0, 0);
+  ctx.setTransform(1, 0, 0, 1, sx, sy);
+  sc.front(t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+const GRAIN = [0, 1, 2, 3].map(s => {
+  const c = mk(256, 256), g = c.getContext('2d'), d = g.createImageData(256, 256), r = rng(100 + s);
+  for (let i = 0; i < d.data.length; i += 4) { const v = r() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 16; }
+  g.putImageData(d, 0, 0); return c;
+});
+function finish(frame) {
+  const v = octx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,8,0.5)');
+  octx.fillStyle = v; octx.fillRect(0, 0, W, H);
+  octx.save(); octx.globalCompositeOperation = 'overlay';
+  octx.fillStyle = octx.createPattern(GRAIN[frame % 4], 'repeat');
+  octx.translate((frame * 37) % 256, (frame * 91) % 256); octx.fillRect(-256, -256, W + 512, H + 512);
+  octx.restore();
+  octx.save(); octx.font = '500 15px JM'; octx.fillStyle = 'rgba(244,247,255,0.42)'; octx.letterSpacing = '5px';
+  octx.textAlign = 'left'; octx.fillText('AIMERISE MARKETING', 64, 96);
+  octx.textAlign = 'right'; octx.fillText('YEAR ONE', W - 64, 96);
+  octx.restore();
+}
+function renderFrame(frame, subs = 3) {
+  const t = frame / FPS;
+  octx.globalAlpha = 1; octx.fillStyle = C.navy; octx.fillRect(0, 0, W, H);
+  for (let i = 0; i < subs; i++) {
+    renderLayers(Math.min(DURATION - 1e-4, t + (i / subs) * (0.5 / FPS)));
+    octx.globalAlpha = 1 / (i + 1); octx.drawImage(frontC, 0, 0);
+  }
+  octx.globalAlpha = 1;
+  finish(frame);
+}
+
+window.ready = Promise.all([
+  document.fonts.load('300 40px MS'), document.fonts.load('500 40px MS'), document.fonts.load('600 40px MS'),
+  document.fonts.load('italic 400 40px IS'), document.fonts.load('500 40px JM'),
+]).then(() => { layout(); return true; });
+window.renderFrame = renderFrame;
+window.FRAMES = FPS * DURATION;
+
+if (!navigator.webdriver) {
+  window.ready.then(() => {
+    const t0 = performance.now();
+    const loop = () => { renderFrame(Math.floor((((performance.now() - t0) / 1000) % DURATION) * FPS), 1); requestAnimationFrame(loop); };
+    loop();
+  });
+}
+</script>
+</body>
+</html>
