@@ -1,0 +1,678 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aimerise — 15s Motion Piece</title>
+<style>
+  @font-face { font-family: 'SG'; font-weight: 500; src: url(fonts/space-grotesk-latin-500-normal.woff2); }
+  @font-face { font-family: 'SG'; font-weight: 700; src: url(fonts/space-grotesk-latin-700-normal.woff2); }
+  @font-face { font-family: 'IS'; font-style: italic; src: url(fonts/instrument-serif-latin-400-italic.woff2); }
+  @font-face { font-family: 'JM'; font-weight: 500; src: url(fonts/jetbrains-mono-latin-500-normal.woff2); }
+  html, body { margin: 0; background: #07070C; }
+  canvas { display: block; width: 100vw; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+/* ==========================================================================
+   AIMERISE MARKETING — 15s brand sizzle
+   Every frame is a pure function of time t (seconds), so the piece can be
+   previewed live in a browser or rendered frame-exact by render.mjs.
+   Beat grid: 120 BPM (one beat = 0.5s); every scene cut lands on a beat.
+   ========================================================================== */
+const W = 1920, H = 1080, FPS = 60, DURATION = 15;
+const C = {
+  ink: '#07070C', ink2: '#12121A', paper: '#F3EFE6',
+  orange: '#FF4D1A', violet: '#7B5CFF', mute: '#8A8794',
+};
+
+const out = document.getElementById('c');
+const octx = out.getContext('2d');
+const scratch = document.createElement('canvas');
+scratch.width = W; scratch.height = H;
+let ctx = scratch.getContext('2d');
+
+/* ---------- easing & math ---------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const p = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, x) => a + (b - a) * x;
+const eo = x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));
+const eio = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const ei = x => x * x * x;
+const back = x => { const c1 = 2.2, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const TAU = Math.PI * 2;
+function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; }
+
+/* ---------- drawing helpers ---------- */
+function bg(col) { ctx.fillStyle = col; ctx.fillRect(0, 0, W, H); }
+function font(f, size, weight = 700) {
+  if (f === 'IS') return `italic 400 ${size}px IS`;
+  if (f === 'JM') return `500 ${size}px JM`;
+  return `${weight} ${size}px SG`;
+}
+function text(str, x, y, o = {}) {
+  ctx.save();
+  ctx.font = font(o.f || 'SG', o.size || 40, o.w || 700);
+  ctx.fillStyle = o.color || C.paper;
+  ctx.textAlign = o.align || 'left';
+  ctx.textBaseline = o.base || 'alphabetic';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  ctx.globalAlpha *= o.alpha ?? 1;
+  if (o.stroke) { ctx.strokeStyle = o.stroke; ctx.lineWidth = o.lw || 2; ctx.strokeText(str, x, y); }
+  else ctx.fillText(str, x, y);
+  ctx.restore();
+}
+function measure(str, o) {
+  ctx.save(); ctx.font = font(o.f || 'SG', o.size, o.w || 700); ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(str).width; ctx.restore(); return w;
+}
+/* text rising out of an invisible mask line */
+function reveal(str, x, y, o, k) {
+  if (k <= 0) return;
+  const size = o.size;
+  const w = measure(str, o);
+  let x0 = x; if (o.align === 'center') x0 = x - w / 2; else if (o.align === 'right') x0 = x - w;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0 - size, y - size * 1.05, w + size * 2, size * 1.35); ctx.clip();
+  text(str, x, y + (1 - eo(k)) * size * 1.15, o);
+  ctx.restore();
+}
+/* monospace typing with block cursor */
+function typed(str, x, y, o, k, cursor = true) {
+  const n = Math.floor(str.length * clamp(k));
+  if (k <= 0) return;
+  text(str.slice(0, n), x, y, o);
+  if (cursor && k < 1.15) {
+    const w = measure(str.slice(0, n), o);
+    ctx.fillStyle = o.cursor || C.orange;
+    ctx.fillRect(x + w + 4, y - o.size * 0.8, o.size * 0.55, o.size * 0.95);
+  }
+}
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function circle(x, y, r, fill) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, TAU); if (fill) { ctx.fillStyle = fill; ctx.fill(); } }
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, Math.max(0, w), h, r); }
+
+/* camera shake on impacts (times are beat hits) */
+const IMPACTS = [[1.0, 14], [2.0, 10], [4.0, 10], [6.5, 12], [9.0, 10], [11.5, 8], [13.5, 18]];
+function shake(t) {
+  let x = 0, y = 0;
+  for (const [ti, amp] of IMPACTS) {
+    const d = t - ti; if (d < 0 || d > 0.35) continue;
+    const a = amp * Math.pow(1 - d / 0.35, 2);
+    x += Math.sin(d * 90) * a; y += Math.cos(d * 70) * a;
+  }
+  return [x, y];
+}
+
+/* background grid that drifts */
+function grid(t, alpha, col = '243,239,230') {
+  ctx.save();
+  ctx.strokeStyle = `rgba(${col},${alpha})`; ctx.lineWidth = 1;
+  const s = 120, off = (t * 30) % s;
+  for (let x = -s + off; x < W + s; x += s) line(x, 0, x, H);
+  for (let y = -s + off * 0.5; y < H + s; y += s) line(0, y, W, y);
+  ctx.restore();
+}
+
+/* ==========================================================================
+   SCENE 1 · 0.0–2.0 · AIM — a reticle draws, hunts, and locks on
+   ========================================================================== */
+function scene1(t) {
+  bg(C.ink);
+  grid(t, 0.05);
+  const cx = W / 2, cy = H / 2;
+
+  // giant outlined AIM behind the reticle
+  const ka = eo(p(t, 0.45, 1.4));
+  ctx.save(); ctx.translate(cx, cy + 190); ctx.scale(lerp(1.25, 1, ka), lerp(1.25, 1, ka));
+  text('AIM', 0, 0, { size: 560, align: 'center', stroke: `rgba(243,239,230,${0.22 * ka})`, lw: 2.5, ls: 20 });
+  ctx.restore();
+
+  // the reticle "hunts" then snaps to centre at t=1.0
+  const hunt = 1 - eo(p(t, 0.2, 1.0));
+  const rx = cx + Math.sin(t * 7) * 160 * hunt, ry = cy + Math.cos(t * 5.3) * 90 * hunt;
+
+  // full-bleed crosshair
+  const l = eo(p(t, 0.0, 0.7));
+  ctx.strokeStyle = 'rgba(243,239,230,0.35)'; ctx.lineWidth = 2;
+  line(rx - l * W, ry, rx - 40, ry); line(rx + 40, ry, rx + l * W, ry);
+  line(rx, ry - l * H, rx, ry - 40); line(rx, ry + 40, rx, ry + l * H);
+
+  const lock = p(t, 1.0, 1.4);
+  const pulse = t >= 1.0 ? 1 + 0.18 * (1 - eo(lock)) : 1;
+
+  // main ring
+  const r1 = eo(p(t, 0.15, 0.95));
+  ctx.strokeStyle = C.paper; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(rx, ry, 210 * pulse, -Math.PI / 2, -Math.PI / 2 + TAU * r1); ctx.stroke();
+  // dashed outer ring, rotating
+  ctx.save(); ctx.translate(rx, ry); ctx.rotate(t * 0.9);
+  ctx.setLineDash([14, 22]); ctx.strokeStyle = `rgba(243,239,230,${0.5 * p(t, 0.3, 0.8)})`; ctx.lineWidth = 2;
+  circle(0, 0, 300 * pulse); ctx.stroke(); ctx.restore();
+  // ring ticks
+  ctx.strokeStyle = C.paper; ctx.lineWidth = 4;
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2, k = eo(p(t, 0.5 + i * 0.06, 0.9 + i * 0.06));
+    const r = 210 * pulse;
+    line(rx + Math.cos(a) * (r - 30 * k), ry + Math.sin(a) * (r - 30 * k), rx + Math.cos(a) * (r + 20 * k), ry + Math.sin(a) * (r + 20 * k));
+  }
+  // corner brackets that snap in on lock
+  const b = lerp(320, 130, back(p(t, 0.95, 1.3)));
+  ctx.strokeStyle = t >= 1.0 ? C.orange : `rgba(243,239,230,${p(t, 0.5, 0.9)})`; ctx.lineWidth = 5;
+  for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    ctx.beginPath();
+    ctx.moveTo(rx + sx * b, ry + sy * (b - 40)); ctx.lineTo(rx + sx * b, ry + sy * b); ctx.lineTo(rx + sx * (b - 40), ry + sy * b);
+    ctx.stroke();
+  }
+  // lock flash ring
+  if (t >= 1.0 && t < 1.6) {
+    const k = p(t, 1.0, 1.6);
+    ctx.strokeStyle = `rgba(255,77,26,${1 - k})`; ctx.lineWidth = 6 * (1 - k) + 1;
+    circle(rx, ry, lerp(30, 520, eo(k))); ctx.stroke();
+  }
+  // centre dot
+  circle(rx, ry, 20 * back(p(t, 1.0, 1.3)), C.orange);
+
+  // HUD
+  const hud = { f: 'JM', size: 22, color: C.mute, ls: 3 };
+  typed('01 / AIM', 80, 90, hud, p(t, 0.1, 0.5), false);
+  typed('SCANNING THE MARKET…', 80, H - 80, hud, p(t, 0.2, 0.9));
+  if (t > 1.0) {
+    const blink = Math.floor(t * 8) % 2 === 0 || t > 1.5;
+    if (blink) text('● TARGET LOCKED: GROWTH', W - 80, H - 80, { ...hud, color: C.orange, align: 'right' });
+  }
+  text(`X ${rx.toFixed(0).padStart(4, '0')}  Y ${ry.toFixed(0).padStart(4, '0')}`, W - 80, 90, { ...hud, align: 'right', alpha: p(t, 0.2, 0.5) });
+}
+
+/* ==========================================================================
+   SCENE 2 · 2.0–4.0 · RISE — the dot launches, draws growth, forms the name
+   ========================================================================== */
+const CHART = (() => {
+  const r = rng(7), pts = [];
+  const n = 13;
+  for (let i = 0; i <= n; i++) {
+    const x = lerp(-40, W + 40, i / n);
+    const trend = lerp(980, 140, Math.pow(i / n, 1.35));
+    pts.push([x, trend + (i % 2 ? 1 : -1) * (40 + r() * 50) * (i > 0 && i < n ? 1 : 0)]);
+  }
+  return pts;
+})();
+function chartPath(k) {
+  // returns path drawn up to fraction k, and the head point
+  const seg = CHART.length - 1, f = k * seg, i = Math.floor(f);
+  ctx.beginPath(); ctx.moveTo(CHART[0][0], CHART[0][1]);
+  for (let j = 1; j <= Math.min(i, seg); j++) ctx.lineTo(CHART[j][0], CHART[j][1]);
+  let head = CHART[Math.min(i, seg)];
+  if (i < seg) {
+    const a = CHART[i], b = CHART[i + 1], fr = f - i;
+    head = [lerp(a[0], b[0], fr), lerp(a[1], b[1], fr)];
+    ctx.lineTo(head[0], head[1]);
+  }
+  return head;
+}
+function scene2(t) {
+  const u = t - 2;
+  bg(C.ink);
+  grid(t, 0.05);
+
+  // growth chart
+  const kc = eio(p(u, 0.0, 1.15));
+  const fade = lerp(1, 0.28, eio(p(u, 1.05, 1.5)));
+  ctx.save(); ctx.globalAlpha = fade;
+  // area fill
+  const head = chartPath(kc);
+  ctx.lineTo(head[0], H); ctx.lineTo(CHART[0][0], H); ctx.closePath();
+  const g = ctx.createLinearGradient(0, 200, 0, H);
+  g.addColorStop(0, 'rgba(255,77,26,0.28)'); g.addColorStop(1, 'rgba(255,77,26,0)');
+  ctx.fillStyle = g; ctx.fill();
+  // line
+  chartPath(kc);
+  ctx.strokeStyle = C.orange; ctx.lineWidth = 7; ctx.lineJoin = 'round';
+  ctx.shadowColor = C.orange; ctx.shadowBlur = 30; ctx.stroke(); ctx.shadowBlur = 0;
+  // vertices
+  CHART.forEach((pt, i) => {
+    const at = i / (CHART.length - 1);
+    const k = p(kc, at, at + 0.05);
+    if (k > 0) { circle(pt[0], pt[1], 11 * back(k), C.ink); ctx.strokeStyle = C.orange; ctx.lineWidth = 4; ctx.stroke(); }
+  });
+  circle(head[0], head[1], 16, C.paper);
+  ctx.restore();
+
+  // RISE → AIM·E·RISE wordmark
+  const bigSize = 420, finalSize = 250;
+  const o = { size: bigSize, ls: 6 };
+  const join = eio(p(u, 1.05, 1.5));
+  const fsc = finalSize / bigSize;
+  const wAIM = measure('AIM', o) * fsc, wE = measure('E', o) * fsc, wRISE = measure('RISE', o) * fsc;
+  const total = wAIM + wE + wRISE;
+  const fx = W / 2 - total / 2, fy = H / 2 + finalSize * 0.36;
+  // RISE — starts centred & huge, glides to its final slot
+  const startX = W / 2 - measure('RISE', o) / 2, startY = H / 2 + bigSize * 0.36;
+  const rX = lerp(startX, fx + wAIM + wE, join), rY = lerp(startY, fy, join), rS = lerp(1, fsc, join);
+  ctx.save(); ctx.translate(rX, rY); ctx.scale(rS, rS);
+  let lx = 0;
+  'RISE'.split('').forEach((ch, i) => {
+    const k = p(u, 0.12 + i * 0.07, 0.6 + i * 0.07);
+    ctx.save(); ctx.beginPath(); ctx.rect(lx - 20, -bigSize * 1.0, measure(ch, o) + 40, bigSize * 1.25); ctx.clip();
+    text(ch, lx, (1 - eo(k)) * bigSize * 1.1, { ...o, ls: 0 });
+    ctx.restore();
+    lx += measure(ch, o);
+  });
+  ctx.restore();
+  // AIM slides in from the left
+  const ka = eo(p(u, 1.1, 1.55));
+  if (ka > 0) {
+    ctx.save(); ctx.beginPath(); ctx.rect(0, fy - finalSize, fx + wAIM + 2, finalSize * 1.3); ctx.clip();
+    text('AIM', fx - (1 - ka) * (wAIM + 60), fy, { size: finalSize, ls: 6 * fsc });
+    ctx.restore();
+  }
+  // the orange E drops in between — the hinge of the name
+  const ke = p(u, 1.42, 1.8);
+  if (ke > 0) {
+    const ey = lerp(-300, fy, back(ke));
+    text('E', fx + wAIM, ey, { size: finalSize, color: C.orange, ls: 6 * fsc });
+  }
+  // caption
+  const cap = { f: 'JM', size: 24, color: C.mute, ls: 6 };
+  typed('SOFTWARE  ×  MARKETING  —  ONE GROWTH ENGINE', W / 2 - measure('SOFTWARE  ×  MARKETING  —  ONE GROWTH ENGINE', cap) / 2, fy + 110, cap, p(u, 1.55, 1.95));
+  typed('02 / RISE', 80, 90, { f: 'JM', size: 22, color: C.mute, ls: 3 }, p(u, 0, 0.3), false);
+}
+
+/* ==========================================================================
+   SCENE 3 · 4.0–6.5 · Software that builds × Marketing that performs
+   ========================================================================== */
+function scene3(t) {
+  const u = t - 4;
+  const slide = eo(p(u, -0.2, 0.25));
+  // left panel drops from top, right panel rises from bottom
+  ctx.save(); ctx.translate(0, (slide - 1) * H);
+  ctx.beginPath(); ctx.rect(0, 0, W / 2, H); ctx.clip();
+  bg(C.paper); grid(t, 0.07, '7,7,12');
+  leftPanel(u);
+  ctx.restore();
+  ctx.save(); ctx.translate(0, (1 - slide) * H);
+  ctx.beginPath(); ctx.rect(W / 2, 0, W / 2, H); ctx.clip();
+  bg(C.ink); grid(t, 0.05);
+  rightPanel(u);
+  ctx.restore();
+  // centre badge
+  const kb = back(p(u, 0.35, 0.65));
+  if (kb > 0) {
+    ctx.save(); ctx.translate(W / 2, H / 2 - 40); ctx.scale(kb, kb); ctx.rotate((1 - kb) * 2);
+    circle(0, 0, 62, C.orange);
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 8; ctx.lineCap = 'round';
+    line(-20, -20, 20, 20); line(20, -20, -20, 20);
+    ctx.restore();
+  }
+}
+function leftPanel(u) {
+  const hud = { f: 'JM', size: 22, color: '#5c5a64', ls: 3 };
+  text('03 / SOFTWARE', 80, 90, hud);
+  // editor window
+  const wx = 110, wy = 160, ww = 700, wh = 470;
+  const kw = eo(p(u, 0.05, 0.45));
+  ctx.save(); ctx.globalAlpha = kw; ctx.translate(0, (1 - kw) * 40);
+  rrect(wx, wy, ww, wh, 22); ctx.fillStyle = C.ink; ctx.fill();
+  ['#FF5F57', '#FEBC2E', '#28C840'].forEach((c, i) => circle(wx + 36 + i * 28, wy + 34, 8, c));
+  const rows = [[0, 300, C.violet], [1, 420, C.paper], [1, 260, C.orange], [2, 340, C.paper], [2, 200, C.violet], [1, 380, C.paper], [0, 150, C.orange], [1, 310, C.paper], [2, 240, C.violet]];
+  rows.forEach(([ind, len, col], i) => {
+    const k = eo(p(u, 0.25 + i * 0.08, 0.55 + i * 0.08));
+    const y = wy + 80 + i * 40;
+    text(String(i + 1).padStart(2, '0'), wx + 30, y + 14, { f: 'JM', size: 16, color: '#4a4852' });
+    rrect(wx + 80 + ind * 44, y, len * k, 16, 8); ctx.fillStyle = col; ctx.globalAlpha = kw * (col === C.paper ? 0.55 : 1); ctx.fill(); ctx.globalAlpha = kw;
+  });
+  const last = Math.min(rows.length - 1, Math.floor(clamp((u - 0.25) / 0.08, 0, rows.length - 1)));
+  if (Math.floor(u * 4) % 2 === 0) { ctx.fillStyle = C.orange; ctx.fillRect(wx + 80 + rows[last][0] * 44 + rows[last][1] + 10, wy + 76 + last * 40, 12, 24); }
+  ctx.restore();
+  // headline
+  reveal('Software', 110, 820, { size: 128, color: C.ink, ls: -3 }, p(u, 0.3, 0.75));
+  reveal('that builds.', 110, 950, { f: 'IS', size: 136, color: C.ink }, p(u, 0.42, 0.87));
+}
+function rightPanel(u) {
+  const hud = { f: 'JM', size: 22, color: C.mute, ls: 3 };
+  text('04 / MARKETING', W - 80, 90, { ...hud, align: 'right' });
+  const labels = ['REACH', 'LEADS', 'CLICKS', 'SALES', 'ROI'];
+  const heights = [170, 240, 300, 380, 470];
+  const bx = 1090, base = 630, bw = 100, gap = 40;
+  ctx.strokeStyle = 'rgba(243,239,230,0.25)'; ctx.lineWidth = 2; line(bx - 20, base, bx + 5 * (bw + gap) - 20, base);
+  const tops = [];
+  labels.forEach((lab, i) => {
+    const k = back(p(u, 0.3 + i * 0.09, 0.75 + i * 0.09));
+    const h = heights[i] * Math.max(0, k);
+    const x = bx + i * (bw + gap);
+    rrect(x, base - h, bw, h, 10);
+    ctx.fillStyle = i === 4 ? C.orange : (i === 3 ? C.violet : 'rgba(243,239,230,0.85)'); ctx.fill();
+    text(lab, x + bw / 2, base + 40, { f: 'JM', size: 18, color: C.mute, align: 'center', ls: 3, alpha: p(u, 0.4 + i * 0.09, 0.6 + i * 0.09) });
+    tops.push([x + bw / 2, base - h - 40]);
+  });
+  // trend arrow over the bars
+  const ka = eio(p(u, 0.9, 1.5));
+  if (ka > 0) {
+    ctx.save(); ctx.strokeStyle = C.orange; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.setLineDash([2, 14]);
+    const x1 = tops[0][0], y1 = tops[0][1], x2 = lerp(x1, tops[4][0] - 10, ka), y2 = lerp(y1, tops[4][1] + 10, ka);
+    line(x1, y1, x2, y2); ctx.setLineDash([]);
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    ctx.translate(x2, y2); ctx.rotate(a); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-24, -14); ctx.moveTo(0, 0); ctx.lineTo(-24, 14); ctx.stroke();
+    ctx.restore();
+  }
+  reveal('Marketing', W - 110, 820, { size: 128, color: C.paper, ls: -3, align: 'right' }, p(u, 0.45, 0.9));
+  reveal('that performs.', W - 110, 950, { f: 'IS', size: 136, color: C.orange, align: 'right' }, p(u, 0.57, 1.02));
+}
+
+/* ==========================================================================
+   SCENE 4 · 6.5–9.0 · Proof — 20,000+ customers, 1,000+ companies
+   ========================================================================== */
+function dotField(k, col, offCol) {
+  const cols = 32, rows = 18, sx = W / cols, sy = H / rows;
+  const r = rng(3);
+  for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+    const on = r() < k;
+    circle(i * sx + sx / 2, j * sy + sy / 2, on ? 5 : 2.5, on ? col : offCol);
+  }
+}
+function counter(target, k) { return Math.round(target * eo(k)).toLocaleString('en-US'); }
+function scene4(t) {
+  const u = t - 6.5;
+  // ---- stat A on orange
+  bg(C.orange);
+  dotField(eo(p(u, 0, 1.0)) * 0.55, 'rgba(7,7,12,0.55)', 'rgba(7,7,12,0.15)');
+  const hud = { f: 'JM', size: 22, color: C.ink, ls: 3 };
+  text('05 / PROOF', 80, 90, hud);
+  const ks = eo(p(u, 0, 0.25));
+  ctx.save(); ctx.translate(0, (1 - ks) * 80); ctx.globalAlpha = ks;
+  text(counter(20000, p(u, 0.0, 0.95)) + '+', 120, 600, { size: 330, color: C.ink, ls: -10 });
+  ctx.restore();
+  reveal('active customers', 130, 760, { f: 'IS', size: 120, color: C.ink }, p(u, 0.25, 0.65));
+  typed('AND COUNTING —', 136, 850, { f: 'JM', size: 26, color: C.ink, ls: 6, cursor: C.ink }, p(u, 0.55, 0.95));
+
+  // ---- stat B: paper rises from the bottom on the 7.75 beat
+  const wipe = eio(p(u, 1.05, 1.3));
+  if (wipe > 0) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, H * (1 - wipe), W, H * wipe); ctx.clip();
+    bg(C.paper);
+    // orbiting constellation of "brands"
+    const ox = 1480, oy = 520;
+    for (let ring = 0; ring < 3; ring++) {
+      ctx.strokeStyle = 'rgba(7,7,12,0.12)'; ctx.lineWidth = 2; circle(ox, oy, 120 + ring * 110); ctx.stroke();
+      const n = 6 + ring * 4;
+      for (let i = 0; i < n; i++) {
+        const a = i / n * TAU + u * (0.5 - ring * 0.15) * (ring % 2 ? -1 : 1);
+        const k = back(p(u, 1.25 + (ring * n + i) * 0.012, 1.5 + (ring * n + i) * 0.012));
+        circle(ox + Math.cos(a) * (120 + ring * 110), oy + Math.sin(a) * (120 + ring * 110), (ring === 0 ? 18 : 12) * k, i % 5 === 0 ? C.orange : C.ink);
+      }
+    }
+    circle(ox, oy, 54 * back(p(u, 1.2, 1.5)), C.orange);
+    text('06 / TRUST', 80, 90, { ...hud });
+    const kb = eo(p(u, 1.2, 1.45));
+    ctx.save(); ctx.translate(0, (1 - kb) * 80); ctx.globalAlpha = kb;
+    text(counter(1000, p(u, 1.2, 2.0)), 120, 600, { size: 330, color: C.ink, ls: -10 });
+    text('+', 120 + measure(counter(1000, p(u, 1.2, 2.0)), { size: 330, ls: -10 }), 600, { size: 330, color: C.orange });
+    ctx.restore();
+    reveal('companies, freelancers', 130, 740, { f: 'IS', size: 96, color: C.ink }, p(u, 1.4, 1.8));
+    reveal('& enterprises trust us.', 130, 840, { f: 'IS', size: 96, color: C.ink }, p(u, 1.5, 1.9));
+    ctx.restore();
+  }
+}
+
+/* ==========================================================================
+   SCENE 5 · 9.0–11.5 · Reach — rooted in Kerala, growing across India
+   ========================================================================== */
+function geo(lon, lat) { return [1080 + (lon - 72) / 9.5 * 640, 960 - (lat - 9) / 20.5 * 780]; }
+const HQ = geo(76.25, 10.2);
+const CITIES = [
+  ['TAMIL NADU', 80.27, 13.08, 1], ['KARNATAKA', 77.59, 12.97, -1], ['HYDERABAD', 78.47, 17.38, 1],
+  ['MUMBAI', 72.88, 19.07, -1], ['DELHI', 77.2, 28.6, 1],
+].map(([n, lo, la, side]) => [n, ...geo(lo, la), side]);
+const STARS = (() => { const r = rng(11), a = []; for (let i = 0; i < 260; i++) a.push([r() * W, r() * H, r()]); return a; })();
+function arcPoint(x1, y1, x2, y2, k) {
+  const mx = (x1 + x2) / 2 + (y2 - y1) * 0.25, my = (y1 + y2) / 2 - (x2 - x1) * 0.25 - 60;
+  const a = (1 - k) * (1 - k), b = 2 * (1 - k) * k, c = k * k;
+  return [a * x1 + b * mx + c * x2, a * y1 + b * my + c * y2];
+}
+function scene5(t) {
+  const u = t - 9;
+  bg(C.ink);
+  const z = lerp(1.06, 1, eo(p(u, 0, 2.5)));
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+  STARS.forEach(([x, y, s]) => circle(x, y, 1 + s * 1.5, `rgba(243,239,230,${0.06 + 0.12 * s * (0.5 + 0.5 * Math.sin(t * 3 + s * 20))})`));
+  // arcs from HQ
+  CITIES.forEach(([name, x, y, side], i) => {
+    const k = eio(p(u, 0.35 + i * 0.13, 0.95 + i * 0.13));
+    if (k <= 0) return;
+    ctx.strokeStyle = 'rgba(255,77,26,0.85)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(HQ[0], HQ[1]);
+    for (let s = 1; s <= 40; s++) { const q = arcPoint(HQ[0], HQ[1], x, y, s / 40 * k); ctx.lineTo(q[0], q[1]); }
+    ctx.stroke();
+    // travelling pulse along the arc
+    const tp = (u * 0.9 + i * 0.2) % 1;
+    if (k >= 1) { const q = arcPoint(HQ[0], HQ[1], x, y, tp); circle(q[0], q[1], 5, C.paper); }
+    const arrive = p(u, 0.95 + i * 0.13, 1.5 + i * 0.13);
+    if (arrive > 0) {
+      ctx.strokeStyle = `rgba(255,77,26,${1 - arrive})`; ctx.lineWidth = 3; circle(x, y, 10 + 50 * eo(arrive)); ctx.stroke();
+      circle(x, y, 9 * back(clamp(arrive * 3)), C.paper);
+      const lw = measure(name, { f: 'JM', size: 20, ls: 4 });
+      typed(name, side > 0 ? x + 24 : x - 24 - lw, y + 8, { f: 'JM', size: 20, color: C.paper, ls: 4 }, clamp(arrive * 2.2), false);
+    }
+  });
+  // HQ
+  const kh = back(p(u, 0.05, 0.4));
+  for (let i = 0; i < 3; i++) {
+    const ph = ((u * 0.8) + i / 3) % 1;
+    ctx.strokeStyle = `rgba(255,77,26,${(1 - ph) * 0.8})`; ctx.lineWidth = 2; circle(HQ[0], HQ[1], 16 + ph * 90); ctx.stroke();
+  }
+  circle(HQ[0], HQ[1], 18 * kh, C.orange);
+  typed('KOCHI · THRISSUR — HQ', HQ[0] + 30, HQ[1] + 60, { f: 'JM', size: 20, color: C.orange, ls: 4 }, p(u, 0.2, 0.6), false);
+  ctx.restore();
+  // copy
+  text('07 / REACH', 80, 90, { f: 'JM', size: 22, color: C.mute, ls: 3 });
+  reveal('Rooted in', 110, 380, { size: 116, color: C.paper, ls: -3 }, p(u, 0.05, 0.45));
+  reveal('Kerala.', 110, 510, { f: 'IS', size: 140, color: C.orange }, p(u, 0.15, 0.55));
+  reveal('Growing across', 110, 700, { size: 116, color: C.paper, ls: -3 }, p(u, 0.9, 1.3));
+  reveal('India.', 110, 830, { f: 'IS', size: 140, color: C.orange }, p(u, 1.0, 1.4));
+}
+
+/* ==========================================================================
+   SCENE 6 · 11.5–13.5 · "Now entering the digital marketing era." on 8ths
+   ========================================================================== */
+const WORDS = [
+  ['NOW', 'SG', C.ink, C.paper], ['entering', 'IS', C.ink, C.paper], ['THE', 'SG', C.ink, C.mute],
+  ['DIGITAL', 'SG', C.paper, C.ink], ['marketing', 'IS', C.ink, C.orange], ['ERA.', 'SG', C.orange, C.ink],
+];
+const LOGO = { x: 0, y: 0 }; // filled in by layoutLockup()
+function scene6(t) {
+  const u = t - 11.5;
+  const i = clamp(Math.floor(u / 0.25), 0, WORDS.length - 1);
+  const [w, f, bgc, fg] = WORDS[i];
+  const lu = u - i * 0.25;
+  bg(bgc);
+  if (bgc !== C.paper) grid(t, 0.05, bgc === C.orange ? '7,7,12' : '243,239,230');
+  const s = lerp(1.35, 1, eo(clamp(lu / 0.14)));
+  const size = f === 'IS' ? 330 : 300;
+  ctx.save(); ctx.translate(W / 2, H / 2 + size * 0.33);
+  const late = i === WORDS.length - 1 ? eio(p(u, 1.45, 1.75)) : 0;
+  ctx.scale(s * (1 - late * 0.4), s * (1 - late * 0.4));
+  text(w, 0, 0, { f, size, color: fg, align: 'center', ls: f === 'SG' ? -8 : 0, alpha: 1 - late });
+  ctx.restore();
+  // running sentence ticker
+  const sent = 'NOW ENTERING THE DIGITAL MARKETING ERA';
+  text(sent, W / 2, H - 80, { f: 'JM', size: 22, ls: 8, align: 'center', color: bgc === C.ink ? C.mute : C.ink, alpha: 0.7 * (1 - late) });
+  text('08 / NEXT', 80, 90, { f: 'JM', size: 22, ls: 3, color: bgc === C.ink ? C.mute : C.ink });
+  // orange field collapses into the logo dot of the lockup
+  if (u > 1.5) {
+    const k = eio(p(u, 1.55, 2.0));
+    const R = lerp(Math.hypot(W, H), 20, k);
+    const cx = lerp(W / 2, LOGO.x, k), cy = lerp(H / 2, LOGO.y, k);
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.arc(cx, cy, R, 0, TAU, true); ctx.clip();
+    bg(C.ink); ctx.restore();
+  }
+}
+
+/* ==========================================================================
+   SCENE 7 · 13.5–15.0 · Lockup — mark, wordmark, tagline, URL
+   ========================================================================== */
+const WM = { size: 168, ls: -4 };
+function layoutLockup() {
+  const ww = measure('aimerise', WM);
+  const markD = 150, gap = 54;
+  const total = markD + gap + ww;
+  const x0 = (W - total) / 2;
+  LOGO.x = x0 + markD / 2; LOGO.y = 455; LOGO.wx = x0 + markD + gap; LOGO.ww = ww;
+}
+function scene7(t) {
+  const u = t - 13.5;
+  bg(C.ink);
+  grid(t, 0.04);
+  const drift = 1 + u * 0.012;
+  ctx.save(); ctx.translate(W / 2, H / 2); ctx.scale(drift, drift); ctx.translate(-W / 2, -H / 2);
+  const { x, y } = LOGO;
+  // mark: ring + ticks + rising arrow
+  const kr = eo(p(u, 0.0, 0.45));
+  ctx.strokeStyle = C.paper; ctx.lineWidth = 7; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(x, y, 68, -Math.PI / 2, -Math.PI / 2 + TAU * kr); ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2, k = eo(p(u, 0.1 + i * 0.04, 0.4 + i * 0.04));
+    line(x + Math.cos(a) * (68 + 4), y + Math.sin(a) * (68 + 4), x + Math.cos(a) * (68 + 4 + 22 * k), y + Math.sin(a) * (68 + 4 + 22 * k));
+  }
+  const kar = eio(p(u, 0.25, 0.6));
+  if (kar > 0) {
+    ctx.strokeStyle = C.orange; ctx.lineWidth = 8;
+    const ex = x + 110 * kar, ey = y - 110 * kar;
+    line(x, y, ex, ey);
+    ctx.beginPath(); ctx.moveTo(ex - 34, ey); ctx.lineTo(ex, ey); ctx.lineTo(ex, ey + 34); ctx.stroke();
+  }
+  circle(x, y, 20 + 6 * (1 - eo(p(u, 0, 0.3))), C.orange);
+  // wordmark, letter by letter; the "e" stays orange (AIM·E·RISE)
+  let lx = LOGO.wx; const by = y + WM.size * 0.3;
+  'aimerise'.split('').forEach((ch, i) => {
+    const k = p(u, 0.1 + i * 0.035, 0.5 + i * 0.035);
+    const cw = measure(ch, WM);
+    ctx.save(); ctx.beginPath(); ctx.rect(lx - 10, by - WM.size, cw + 20, WM.size * 1.3); ctx.clip();
+    text(ch, lx, by + (1 - eo(k)) * WM.size, { ...WM, color: i === 3 ? C.orange : C.paper });
+    ctx.restore();
+    lx += cw;
+  });
+  typed('MARKETING', LOGO.wx + 8, by + 62, { f: 'JM', size: 28, color: C.mute, ls: 22 }, p(u, 0.4, 0.75), false);
+  ctx.restore();
+  // tagline
+  const tg = ['Aim', 'higher.', 'Rise', 'faster.'];
+  const to = { f: 'IS', size: 92 };
+  const sp = measure(' ', to);
+  const widths = tg.map(w => measure(w, to));
+  let tx = W / 2 - (widths.reduce((a, b) => a + b, 0) + sp * 3) / 2;
+  tg.forEach((w, i) => {
+    reveal(w, tx, 760, { ...to, color: i % 2 ? C.orange : C.paper }, p(u, 0.45 + i * 0.09, 0.85 + i * 0.09));
+    tx += widths[i] + sp;
+  });
+  // footer
+  const fa = p(u, 0.8, 1.1);
+  ctx.strokeStyle = `rgba(243,239,230,${0.18 * fa})`; ctx.lineWidth = 2; line(W / 2 - 330 * eo(fa), 870, W / 2 + 330 * eo(fa), 870);
+  text('aimerisemarketing.com', W / 2, 930, { f: 'JM', size: 28, color: C.paper, align: 'center', ls: 4, alpha: fa });
+  text('A VENTURE BY AURAPHILE DIGITAL', W / 2, 980, { f: 'JM', size: 18, color: C.mute, align: 'center', ls: 8, alpha: p(u, 0.95, 1.25) });
+}
+
+/* ==========================================================================
+   Transitions & compositor
+   ========================================================================== */
+function renderScene(t) {
+  ctx.save();
+  const [sx, sy] = shake(t);
+  ctx.translate(sx, sy);
+  if (t < 2.0) {
+    // vertical whip-pan: scene 1 slides down while scene 2 arrives from above
+    const k = eio(p(t, 1.72, 2.0));
+    ctx.save(); ctx.translate(0, k * H); scene1(t); ctx.restore();
+    if (k > 0) {
+      ctx.save(); ctx.translate(0, (k - 1) * H); scene2(t); ctx.restore();
+      // launch streak
+      ctx.strokeStyle = C.orange; ctx.lineWidth = 10; ctx.shadowColor = C.orange; ctx.shadowBlur = 40;
+      line(W / 2, H / 2 + k * H, W / 2, H / 2 + k * H - 900 * Math.sin(k * Math.PI));
+      ctx.shadowBlur = 0;
+    }
+  } else if (t < 3.8) scene2(t);
+  else if (t < 4.0) { scene2(t); scene3(t); }
+  else if (t < 6.25) scene3(t);
+  else if (t < 6.5) {
+    // diagonal orange wipe
+    scene3(t);
+    const k = eio(p(t, 6.25, 6.5));
+    const xx = lerp(-700, W + 700, k);
+    ctx.save(); ctx.beginPath(); ctx.moveTo(-800, 0); ctx.lineTo(xx + 300, 0); ctx.lineTo(xx - 100, H); ctx.lineTo(-800, H); ctx.closePath(); ctx.clip();
+    scene4(6.5); ctx.restore();
+    ctx.fillStyle = C.paper; ctx.beginPath(); ctx.moveTo(xx + 300, 0); ctx.lineTo(xx + 340, 0); ctx.lineTo(xx - 60, H); ctx.lineTo(xx - 100, H); ctx.closePath(); ctx.fill();
+  }
+  else if (t < 8.75) scene4(t);
+  else if (t < 9.0) {
+    // iris: ink circle blooms from Kochi HQ
+    scene4(t);
+    const k = eio(p(t, 8.75, 9.0));
+    ctx.save(); ctx.beginPath(); ctx.arc(HQ[0], HQ[1], k * 2300, 0, TAU); ctx.clip(); scene5(9.0); ctx.restore();
+  }
+  else if (t < 11.5) scene5(t);
+  else if (t < 13.5) scene6(t);
+  else scene7(t);
+  ctx.restore();
+}
+
+/* film grain + vignette */
+const GRAIN = [0, 1, 2, 3].map(s => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), d = g.createImageData(256, 256), r = rng(100 + s);
+  for (let i = 0; i < d.data.length; i += 4) { const v = r() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 22; }
+  g.putImageData(d, 0, 0); return c;
+});
+function finish(t, frame) {
+  const v = octx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.42)');
+  octx.fillStyle = v; octx.fillRect(0, 0, W, H);
+  octx.save(); octx.globalCompositeOperation = 'overlay';
+  octx.fillStyle = octx.createPattern(GRAIN[frame % 4], 'repeat');
+  octx.translate((frame * 37) % 256, (frame * 91) % 256); octx.fillRect(-256, -256, W + 512, H + 512);
+  octx.restore();
+  // safe-frame corner marks + timecode (difference blend reads on every bg)
+  octx.save(); octx.globalCompositeOperation = 'difference'; octx.strokeStyle = 'rgba(255,255,255,0.55)'; octx.lineWidth = 2;
+  for (const [x, y, sx, sy] of [[40, 40, 1, 1], [W - 40, 40, -1, 1], [W - 40, H - 40, -1, -1], [40, H - 40, 1, -1]]) {
+    octx.beginPath(); octx.moveTo(x, y + sy * 24); octx.lineTo(x, y); octx.lineTo(x + sx * 24, y); octx.stroke();
+  }
+  octx.font = '500 16px JM'; octx.fillStyle = 'rgba(255,255,255,0.55)'; octx.textAlign = 'center'; octx.letterSpacing = '4px';
+  const s = Math.floor(t), f = Math.floor((t - s) * FPS);
+  octx.fillText(`AIMERISE ® — 00:${String(s).padStart(2, '0')}:${String(f).padStart(2, '0')}`, W / 2, 56);
+  octx.restore();
+}
+
+/* motion blur: average several sub-frames across a 180° shutter */
+function renderFrame(frame, subs = 4) {
+  const t = frame / FPS;
+  octx.globalAlpha = 1; octx.fillStyle = C.ink; octx.fillRect(0, 0, W, H);
+  for (let i = 0; i < subs; i++) {
+    const st = Math.min(DURATION - 1e-4, t + (i / subs) * (0.5 / FPS));
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+    renderScene(st);
+    octx.globalAlpha = 1 / (i + 1); octx.drawImage(scratch, 0, 0);
+  }
+  octx.globalAlpha = 1;
+  finish(t, frame);
+}
+
+window.ready = document.fonts.load('700 40px SG').then(() => Promise.all([
+  document.fonts.load('500 40px SG'), document.fonts.load('italic 400 40px IS'), document.fonts.load('500 40px JM'),
+])).then(() => { layoutLockup(); return true; });
+window.renderFrame = renderFrame;
+window.FRAMES = FPS * DURATION;
+
+/* live preview when opened directly in a browser */
+if (!navigator.webdriver) {
+  window.ready.then(() => {
+    const t0 = performance.now();
+    const loop = () => {
+      const t = ((performance.now() - t0) / 1000) % DURATION;
+      renderFrame(Math.floor(t * FPS), 1);
+      requestAnimationFrame(loop);
+    };
+    loop();
+  });
+}
+</script>
+</body>
+</html>
