@@ -1,6 +1,6 @@
 # Aimerise Marketing — One Year (vertical, Liquid Glass)
 
-`out/aimerise-1-year-vertical.mp4` · 1080×1920 (9:16) · 60 fps · H.264 + AAC · 15.0 s
+`out/aimerise-1-year-vertical.mp4` (dark) · `out/aimerise-1-year-vertical-white.mp4` (white) · 1080×1920 (9:16) · 60 fps · H.264 + AAC · 15.0 s
 Made for Reels, Shorts, TikTok and Stories.
 
 ## The Liquid Glass motion language
@@ -32,5 +32,14 @@ library, so the effect is built directly in `index.html`. Each frame renders in 
 
 ```bash
 node soundtrack.mjs   # out/soundtrack.wav
-node render.mjs       # out/aimerise-1-year-vertical.mp4
+node render.mjs           # dark  → out/aimerise-1-year-vertical.mp4
+node render.mjs --light   # white → out/aimerise-1-year-vertical-white.mp4
+```
+
+The white theme is the same piece with swapped theme tokens (`T` in `index.html`): a soft
+white backdrop with pastel brand orbs, frosted white glass with a hairline edge, navy
+type, and the outlined wordmark exactly as it appears on the white logo.
+
+```bash
+# preview either theme live: open index.html (dark) or index.html?light (white)
 ```

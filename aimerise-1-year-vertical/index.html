@@ -25,7 +25,20 @@
    glass refracts; FRONT (glass + type) sits on top. 120 BPM beat grid.
    ========================================================================== */
 const W = 1080, H = 1920, FPS = 60, DURATION = 15;
-const C = { navy: '#040A18', white: '#F4F7FF', grey: '#8C97AD', blue: [26, 109, 255], cyan: [31, 224, 207] };
+const LIGHT = /light/.test(location.search);
+const C = { navy: '#040A18', white: '#F4F7FF', grey: '#8C97AD', blue: [26, 109, 255], cyan: LIGHT ? [20, 191, 203] : [31, 224, 207] };
+// theme tokens — dark (default) or white (?light)
+const T = LIGHT ? {
+  bg: '#F4F7FC', text: '#0B1633', sub: '#5D6A85', faint: 'rgba(11,22,51,0.12)', dotOff: 'rgba(11,22,51,0.22)',
+  shadow: 'rgba(30,60,140,0.20)', tint: [0.62, 0.30, 0.42], glow: 0.35, edge: 'rgba(11,22,51,0.10)',
+  orbBlend: 'source-over', orbA: [0.20, 0.20, 0.12], speck: [26, 109, 255], speckA: 0.10,
+  wmStroke: '#2A3550', wmFill: '#FFFFFF', vignette: 'rgba(40,70,140,0.10)', hud: 'rgba(11,22,51,0.45)', confetti: 'rgba(11,22,51,A)', lineGlow: 0.10,
+} : {
+  bg: '#040A18', text: '#F4F7FF', sub: '#8C97AD', faint: 'rgba(244,247,255,0.14)', dotOff: 'rgba(244,247,255,0.35)',
+  shadow: 'rgba(0,3,16,0.6)', tint: [0.24, 0.06, 0.12], glow: 0.07, edge: null,
+  orbBlend: 'lighter', orbA: [0.42, 0.26, 0.30], speck: [244, 247, 255], speckA: 0.16,
+  wmStroke: 'rgba(120,130,150,0.9)', wmFill: '#F4F7FF', vignette: 'rgba(0,0,8,0.5)', hud: 'rgba(244,247,255,0.42)', confetti: 'rgba(244,247,255,A)', lineGlow: 0.12,
+};
 const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 const mix = (a, b, k) => [0, 1, 2].map(i => Math.round(a[i] + (b[i] - a[i]) * k));
 
@@ -59,14 +72,14 @@ function measure(str, o) {
   ctx.save(); ctx.font = font(o.f || 'MS', o.size, o.w); ctx.letterSpacing = (o.ls || 0) + 'px';
   const w = ctx.measureText(str).width; ctx.restore(); return w;
 }
-function grad(x0, x1) { const g = ctx.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, rgb(C.cyan)); g.addColorStop(1, rgb(C.blue)); return g; }
+function grad(x0, x1) { const g = ctx.createLinearGradient(x0, 0, x1, 0); g.addColorStop(0, LIGHT ? 'rgb(14,160,190)' : rgb(C.cyan)); g.addColorStop(1, rgb(C.blue)); return g; }
 function text(str, x, y, o = {}) {
   ctx.save();
   ctx.font = font(o.f || 'MS', o.size || 40, o.w);
   ctx.textAlign = o.align || 'left';
   ctx.letterSpacing = (o.ls || 0) + 'px';
   ctx.globalAlpha *= o.alpha ?? 1;
-  let fill = o.color || C.white;
+  let fill = o.color || T.text;
   if (o.gradient) {
     const w = measure(str, o), x0 = o.align === 'center' ? x - w / 2 : o.align === 'right' ? x - w : x;
     fill = grad(x0, x0 + w);
@@ -110,7 +123,7 @@ function glass(s, o = {}) {
   const lens = (m, src) => { ctx.translate(cx, cy); ctx.scale(m, m); ctx.translate(-cx, -cy); ctx.drawImage(src, 0, 0, W, H); };
   ctx.save(); ctx.globalAlpha = a;
   // soft floating shadow
-  ctx.save(); ctx.beginPath(); shapePath(s); ctx.shadowColor = 'rgba(0,3,16,0.6)'; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26; ctx.fillStyle = C.navy; ctx.fill(); ctx.restore();
+  ctx.save(); ctx.beginPath(); shapePath(s); ctx.shadowColor = T.shadow; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26; ctx.fillStyle = T.bg; ctx.fill(); ctx.restore();
   // body: magnified, frosted backdrop
   ctx.save(); ctx.beginPath(); shapePath(s); ctx.clip(); lens(mag, o.sharp ? backC : blurC); ctx.restore();
   // rim: graded rings, each bending light a little more toward the edge
@@ -121,9 +134,9 @@ function glass(s, o = {}) {
   // tint, sheen and inner glow
   ctx.save(); ctx.beginPath(); shapePath(s); ctx.clip();
   const g = ctx.createLinearGradient(0, s.y, 0, s.y + s.h);
-  g.addColorStop(0, 'rgba(255,255,255,0.24)'); g.addColorStop(0.42, 'rgba(255,255,255,0.06)'); g.addColorStop(1, 'rgba(255,255,255,0.12)');
+  g.addColorStop(0, `rgba(255,255,255,${T.tint[0]})`); g.addColorStop(0.42, `rgba(255,255,255,${T.tint[1]})`); g.addColorStop(1, `rgba(255,255,255,${T.tint[2]})`);
   ctx.fillStyle = g; ctx.fillRect(s.x, s.y, s.w, s.h);
-  ctx.beginPath(); shapePath(s); ctx.lineWidth = band * 0.7; ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.stroke();
+  ctx.beginPath(); shapePath(s); ctx.lineWidth = band * 0.7; ctx.strokeStyle = `rgba(255,255,255,${T.glow})`; ctx.stroke();
   // caustic: a faint brand-coloured glint travelling along the lower rim
   const gx = s.x + s.w * (0.5 + 0.5 * Math.sin((o.t ?? 0) * 1.3));
   const cg = ctx.createRadialGradient(gx, s.y + s.h, 0, gx, s.y + s.h, s.w * 0.45);
@@ -135,6 +148,7 @@ function glass(s, o = {}) {
   const rg = ctx.createLinearGradient(s.x, s.y, s.x + s.w * 0.6, s.y + s.h);
   rg.addColorStop(0, 'rgba(255,255,255,0.95)'); rg.addColorStop(0.28, 'rgba(255,255,255,0.18)');
   rg.addColorStop(0.7, 'rgba(255,255,255,0.08)'); rg.addColorStop(1, 'rgba(255,255,255,0.55)');
+  if (T.edge) { ctx.strokeStyle = T.edge; ctx.lineWidth = 1; ctx.stroke(); ctx.beginPath(); shapePath(s, 1.5); }
   ctx.strokeStyle = rg; ctx.lineWidth = 2; ctx.stroke();
   ctx.restore();
 }
@@ -191,7 +205,7 @@ function drawLines(ptFn, o = {}) {
   for (let pass = 0; pass < 2; pass++) for (let i = 0; i < N; i++) {
     ctx.beginPath();
     for (let j = 0; j <= end; j++) { const q = ptFn(i, j); j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]); }
-    ctx.strokeStyle = rgb(COLORS[i], pass ? alpha * 0.95 : alpha * 0.12);
+    ctx.strokeStyle = rgb(COLORS[i], pass ? alpha * 0.95 : alpha * T.lineGlow);
     ctx.lineWidth = pass ? lw : lw * 5; ctx.stroke();
   }
   ctx.restore();
@@ -200,9 +214,9 @@ const toScreen = (q, x, y, s, rot = 0) => { const c = Math.cos(rot), sn = Math.s
 
 /* ---------- backdrop: deep navy, drifting brand-colour orbs, specks ---------- */
 function backdrop(t, glow = 1) {
-  ctx.fillStyle = C.navy; ctx.fillRect(0, 0, W, H);
-  const orbs = [[C.blue, 0.42, 520, 0.31, 0.0], [C.cyan, 0.26, 430, 0.23, 2.1], [[60, 80, 255], 0.30, 480, 0.19, 4.0]];
-  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
+  const orbs = [[C.blue, T.orbA[0], 520, 0.31, 0.0], [C.cyan, T.orbA[1], 430, 0.23, 2.1], [[60, 80, 255], T.orbA[2], 480, 0.19, 4.0]];
+  ctx.save(); ctx.globalCompositeOperation = T.orbBlend;
   orbs.forEach(([c, a, r, sp, ph]) => {
     const x = W / 2 + Math.sin(t * sp * 2 + ph) * 360, y = H / 2 + Math.cos(t * sp * 1.6 + ph * 1.3) * 640;
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
@@ -213,7 +227,7 @@ function backdrop(t, glow = 1) {
   const rr = rng(5);
   for (let i = 0; i < 80; i++) {
     const x = (rr() * W + t * (6 + rr() * 16)) % W, y = (rr() * H - t * (10 + rr() * 30) + H * 4) % H, s = rr();
-    ctx.fillStyle = rgb(s > 0.5 ? C.cyan : C.white, 0.08 + 0.16 * s * (0.5 + 0.5 * Math.sin(t * 3 + i)));
+    ctx.fillStyle = rgb(s > 0.5 ? C.cyan : T.speck, 0.06 + T.speckA * s * (0.5 + 0.5 * Math.sin(t * 3 + i)));
     circle(x, y, 1 + s * 1.6); ctx.fill();
   }
 }
@@ -285,10 +299,10 @@ const S2 = { // 2.5–5 · mark rises; a glass card springs up: 1 YEAR / DAY 365
     reveal('of aiming', cx, cy - 10, { f: 'IS', size: 96 }, p(u, 0.65, 1.1));
     reveal('higher.', cx + 2, cy + 85, { f: 'IS', size: 96, gradient: true }, p(u, 0.75, 1.2));
     const day = Math.round(lerp(1, 365, eio(p(u, 0.45, 1.85)))), ca = p(u, 0.5, 0.8);
-    text('DAY', cx, cy + 185, { f: 'JM', size: 24, color: C.grey, ls: 6, alpha: ca });
+    text('DAY', cx, cy + 185, { f: 'JM', size: 24, color: T.sub, ls: 6, alpha: ca });
     text(String(day).padStart(3, '0'), cx + 90, cy + 185, { f: 'JM', size: 24, color: rgb(C.cyan), ls: 6, alpha: ca });
-    text('/ 365', cx + 175, cy + 185, { f: 'JM', size: 24, color: C.grey, ls: 6, alpha: ca });
-    ctx.fillStyle = 'rgba(244,247,255,0.14)'; ctx.fillRect(cx, cy + 212, 400, 3);
+    text('/ 365', cx + 175, cy + 185, { f: 'JM', size: 24, color: T.sub, ls: 6, alpha: ca });
+    ctx.fillStyle = T.faint; ctx.fillRect(cx, cy + 212, 400, 3);
     ctx.fillStyle = grad(cx, cx + 400); ctx.fillRect(cx, cy + 212, 400 * (day / 365) * ca, 3);
     ctx.restore();
   },
@@ -327,7 +341,7 @@ const S3 = { // 5–10 · Thank you — a liquid card that reshapes for every li
     let x = -ww / 2;
     word.split('').forEach((ch, i) => {
       const k = eo(p(u, 0.05 + i * 0.045, 0.55 + i * 0.045));
-      text(ch, x, (1 - k) * 60 - eio(exitAll) * 80, { ...o, color: i === 9 ? rgb(C.cyan) : C.white, alpha: k * (1 - exitAll) });
+      text(ch, x, (1 - k) * 60 - eio(exitAll) * 80, { ...o, color: i === 9 ? rgb(C.cyan) : T.text, alpha: k * (1 - exitAll) });
       x += measure(ch, o);
     });
     ctx.restore();
@@ -346,7 +360,7 @@ const S3 = { // 5–10 · Thank you — a liquid card that reshapes for every li
     glass(pill(W / 2, 1430, 150 * dk, 46 * dk), { alpha: p(t, 5.95, 6.05) * (1 - shrink), t });
     for (let i = 0; i < 4; i++) {
       const on = u >= 1 + i && u < 2 + i;
-      ctx.fillStyle = on ? rgb(C.cyan) : 'rgba(244,247,255,0.35)';
+      ctx.fillStyle = on ? rgb(C.cyan) : T.dotOff;
       ctx.globalAlpha = p(u, 1.0, 1.2) * (1 - shrink); circle(W / 2 - 39 + i * 26, 1430, on ? 7 : 4.5); ctx.fill(); ctx.globalAlpha = 1;
     }
   },
@@ -406,11 +420,12 @@ const S5 = { // 12.5–15 · lockup, confetti, a glass lens glides over the word
     let x = L.wx - extra * 3.5;
     'AIMERISE'.split('').forEach((ch, i) => {
       const ki = eo(p(u, 0.25 + i * 0.04, 0.75 + i * 0.04)), o = { ...L.wm, ls: 0 };
-      text(ch, x + i * extra, L.wy, { ...o, alpha: ki });
-      text(ch, x + i * extra, L.wy, { ...o, stroke: 'rgba(120,130,150,0.9)', lw: 1.4, alpha: ki });
+      // outline first, fill on top: hides the font's internal contour overlaps
+      text(ch, x + i * extra, L.wy, { ...o, stroke: T.wmStroke, lw: LIGHT ? 3.4 : 2.6, alpha: ki });
+      text(ch, x + i * extra, L.wy, { ...o, color: T.wmFill, alpha: ki });
       x += measure(ch, o) + L.wm.ls;
     });
-    text('MARKETING', W / 2 - L.mkw / 2 + L.mk.ls / 2, L.wy + 72, { ...L.mk, alpha: p(u, 0.6, 1.1) * 0.85 });
+    text('MARKETING', W / 2 - L.mkw / 2 + L.mk.ls / 2, L.wy + 72, { ...L.mk, color: LIGHT ? T.sub : T.text, alpha: p(u, 0.6, 1.1) * 0.85 });
   },
   front(t) {
     const u = t - 12.5;
@@ -419,7 +434,7 @@ const S5 = { // 12.5–15 · lockup, confetti, a glass lens glides over the word
       const x = L.mx + c.vx * d * Math.exp(-d * 1.4) * 0.9, y = L.my + c.vy * d * Math.exp(-d * 1.4) * 0.9 + 320 * d * d;
       const a = clamp(1 - (d - 1.4) / 0.9); if (a <= 0) return;
       ctx.save(); ctx.translate(x, y); ctx.rotate(c.rot + c.vr * d);
-      ctx.strokeStyle = c.white ? `rgba(244,247,255,${a})` : rgb(c.col, a); ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+      ctx.strokeStyle = c.white ? T.confetti.replace('A', a) : rgb(c.col, a); ctx.lineWidth = 3.5; ctx.lineCap = 'round';
       line(-c.len / 2, 0, c.len / 2, 0); ctx.restore();
     });
     // droplet → pill
@@ -459,7 +474,7 @@ function shake(t) {
 }
 function renderLayers(t) {
   const sc = sceneAt(t), [sx, sy] = shake(t);
-  ctx = backX; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = C.navy; ctx.fillRect(0, 0, W, H);
+  ctx = backX; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = T.bg; ctx.fillRect(0, 0, W, H);
   ctx.setTransform(1, 0, 0, 1, sx, sy); ctx.globalAlpha = 1; sc.back(t);
   // frosted copies of the backdrop for the glass to refract
   blurX.filter = 'blur(3px) saturate(160%)'; blurX.drawImage(backC, 0, 0, blurC.width, blurC.height);
@@ -477,20 +492,20 @@ const GRAIN = [0, 1, 2, 3].map(s => {
 });
 function finish(frame) {
   const v = octx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
-  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,8,0.5)');
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, T.vignette);
   octx.fillStyle = v; octx.fillRect(0, 0, W, H);
   octx.save(); octx.globalCompositeOperation = 'overlay';
   octx.fillStyle = octx.createPattern(GRAIN[frame % 4], 'repeat');
   octx.translate((frame * 37) % 256, (frame * 91) % 256); octx.fillRect(-256, -256, W + 512, H + 512);
   octx.restore();
-  octx.save(); octx.font = '500 15px JM'; octx.fillStyle = 'rgba(244,247,255,0.42)'; octx.letterSpacing = '5px';
+  octx.save(); octx.font = '500 15px JM'; octx.fillStyle = T.hud; octx.letterSpacing = '5px';
   octx.textAlign = 'left'; octx.fillText('AIMERISE MARKETING', 64, 96);
   octx.textAlign = 'right'; octx.fillText('YEAR ONE', W - 64, 96);
   octx.restore();
 }
 function renderFrame(frame, subs = 3) {
   const t = frame / FPS;
-  octx.globalAlpha = 1; octx.fillStyle = C.navy; octx.fillRect(0, 0, W, H);
+  octx.globalAlpha = 1; octx.fillStyle = T.bg; octx.fillRect(0, 0, W, H);
   for (let i = 0; i < subs; i++) {
     renderLayers(Math.min(DURATION - 1e-4, t + (i / subs) * (0.5 / FPS)));
     octx.globalAlpha = 1 / (i + 1); octx.drawImage(frontC, 0, 0);
