@@ -1,0 +1,506 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aimerise — One Year</title>
+<style>
+  @font-face { font-family: 'MS'; font-weight: 300; src: url(fonts/montserrat-latin-300-normal.woff2); }
+  @font-face { font-family: 'MS'; font-weight: 500; src: url(fonts/montserrat-latin-500-normal.woff2); }
+  @font-face { font-family: 'MS'; font-weight: 600; src: url(fonts/montserrat-latin-600-normal.woff2); }
+  @font-face { font-family: 'IS'; font-style: italic; src: url(fonts/instrument-serif-latin-400-italic.woff2); }
+  @font-face { font-family: 'JM'; font-weight: 500; src: url(fonts/jetbrains-mono-latin-500-normal.woff2); }
+  html, body { margin: 0; background: #040A18; }
+  canvas { display: block; width: 100vw; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+/* ==========================================================================
+   AIMERISE MARKETING — "One Year. Thank you, everyone." — 15s
+   The logo mark is rebuilt in code as the same line-blend the brand uses
+   (blue triangle → cyan rounded form), so its lines can fly, wave, rise and
+   re-form. Every frame is a pure function of t; 120 BPM beat grid.
+   ========================================================================== */
+const W = 1920, H = 1080, FPS = 60, DURATION = 15;
+const C = {
+  navy: '#040A18', navy2: '#0A1630', white: '#F4F7FF', grey: '#8C97AD',
+  blue: [26, 109, 255], cyan: [31, 224, 207],
+};
+const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const mix = (a, b, k) => [0, 1, 2].map(i => Math.round(a[i] + (b[i] - a[i]) * k));
+
+const out = document.getElementById('c');
+const octx = out.getContext('2d');
+const scratch = document.createElement('canvas');
+scratch.width = W; scratch.height = H;
+const ctx = scratch.getContext('2d');
+
+/* ---------- easing & math ---------- */
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const p = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, x) => a + (b - a) * x;
+const eo = x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * x));
+const eio = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const back = x => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const TAU = Math.PI * 2;
+function rng(seed) { return () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; }
+
+/* ---------- text helpers ---------- */
+function font(f, size, w = 500) {
+  if (f === 'IS') return `italic 400 ${size}px IS`;
+  if (f === 'JM') return `500 ${size}px JM`;
+  return `${w} ${size}px MS`;
+}
+function measure(str, o) {
+  ctx.save(); ctx.font = font(o.f || 'MS', o.size, o.w); ctx.letterSpacing = (o.ls || 0) + 'px';
+  const w = ctx.measureText(str).width; ctx.restore(); return w;
+}
+function grad(x0, x1) {
+  const g = ctx.createLinearGradient(x0, 0, x1, 0);
+  g.addColorStop(0, rgb(C.cyan)); g.addColorStop(1, rgb(C.blue)); return g;
+}
+function text(str, x, y, o = {}) {
+  ctx.save();
+  ctx.font = font(o.f || 'MS', o.size || 40, o.w);
+  ctx.textAlign = o.align || 'left';
+  ctx.letterSpacing = (o.ls || 0) + 'px';
+  ctx.globalAlpha *= o.alpha ?? 1;
+  let fill = o.color || C.white;
+  if (o.gradient) {
+    const w = measure(str, o);
+    const x0 = o.align === 'center' ? x - w / 2 : o.align === 'right' ? x - w : x;
+    fill = grad(x0, x0 + w);
+  }
+  if (o.stroke) { ctx.lineWidth = o.lw || 2; ctx.strokeStyle = o.gradient ? fill : o.stroke; ctx.strokeText(str, x, y); }
+  if (!o.stroke || o.fillToo) { ctx.fillStyle = o.fillToo || fill; ctx.fillText(str, x, y); }
+  ctx.restore();
+}
+function reveal(str, x, y, o, k, exit = 0) {
+  if (k <= 0 || exit >= 1) return;
+  const w = measure(str, o);
+  let x0 = x; if (o.align === 'center') x0 = x - w / 2; else if (o.align === 'right') x0 = x - w;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0 - o.size, y - o.size * 1.05, w + o.size * 2, o.size * 1.4); ctx.clip();
+  text(str, x, y + (1 - eo(k)) * o.size * 1.2 - eio(exit) * o.size * 1.2, o);
+  ctx.restore();
+}
+/* a line made of mixed runs: [[str, opts], ...], centred, rising from a mask */
+function runs(parts, cx, y, k, exit = 0) {
+  if (k <= 0 || exit >= 1) return;
+  const widths = parts.map(([s, o]) => measure(s, o));
+  let x = cx - widths.reduce((a, b) => a + b, 0) / 2;
+  parts.forEach(([s, o], i) => {
+    const ki = clamp(k * 1.25 - i * 0.12);
+    reveal(s, x, y, o, ki, exit);
+    x += widths[i];
+  });
+}
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function circle(x, y, r) { ctx.beginPath(); ctx.arc(x, y, Math.max(0, r), 0, TAU); }
+
+/* ==========================================================================
+   THE MARK — line blend from triangle to rounded form (traced from the logo)
+   ========================================================================== */
+const N = 18, M = 200;
+const MARK_C = [386, 382];
+function chaikin(pts, it) {
+  for (let k = 0; k < it; k++) {
+    const o = [];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      o.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    pts = o;
+  }
+  return pts;
+}
+function resample(poly) {
+  const segs = []; let total = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    segs.push([a, b, l]); total += l;
+  }
+  const outp = [];
+  for (let j = 0; j < M; j++) {
+    let d = j / M * total, s = 0;
+    while (d > segs[s][2]) { d -= segs[s][2]; s++; }
+    const [a, b, l] = segs[s], k = d / l;
+    outp.push([a[0] + (b[0] - a[0]) * k - MARK_C[0], a[1] + (b[1] - a[1]) * k - MARK_C[1]]);
+  }
+  return outp;
+}
+const TRI = resample([[252, 60], [702, 402], [195, 529]]);
+const BLOB = resample(chaikin([[105, 290], [350, 192], [448, 322], [505, 480], [455, 625], [230, 710], [62, 675], [100, 455]], 3));
+const BLOB_OFF = Math.round(M * 0.12);
+// lines bunch toward both ends of the blend, like the logo
+const KS = Array.from({ length: N }, (_, i) => { const x = i / (N - 1); return x * x * (3 - 2 * x) * 0.7 + x * 0.3; });
+const COLORS = Array.from({ length: N }, (_, i) => mix(C.blue, C.cyan, i / (N - 1)));
+function logoPt(i, j) {
+  const k = KS[i], a = TRI[j % M], b = BLOB[(j + BLOB_OFF) % M];
+  return [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+}
+// alternative "sources" the lines live as before they become the mark
+function wavePt(i, j, t, cy = H / 2, amp = 110) {
+  const s = j / M;
+  return [lerp(-160, W + 160, s), cy + (i - (N - 1) / 2) * 13 + Math.sin(s * TAU * 1.3 + t * 2.2 + i * 0.22) * amp * (0.6 + 0.4 * Math.sin(s * Math.PI))];
+}
+function risePt(i, j, t) {
+  const s = j / M;
+  return [W / 2 + (i - (N - 1) / 2) * 18 + Math.sin(s * TAU * 1.4 - t * 4 + i * 0.25) * 90 * Math.sin(s * Math.PI), lerp(H + 160, -160, s)];
+}
+/* draw all N lines. ptFn(i,j) -> [x,y] in screen space. */
+function drawLines(ptFn, o = {}) {
+  const frac = o.frac ?? 1, alpha = o.alpha ?? 1, lw = o.lw ?? 2;
+  const end = Math.max(1, Math.floor(frac * M));
+  const start = Math.floor((o.from ?? 0) * M);
+  if (alpha <= 0) return;
+  ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < N; i++) {
+      ctx.beginPath();
+      for (let j = start; j <= end; j++) { const q = ptFn(i, j); j === start ? ctx.moveTo(q[0], q[1]) : ctx.lineTo(q[0], q[1]); }
+      ctx.strokeStyle = rgb(COLORS[i], pass ? alpha * 0.95 : alpha * 0.12);
+      ctx.lineWidth = pass ? lw : lw * 5;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+const toScreen = (q, x, y, s, rot = 0) => {
+  const c = Math.cos(rot), sn = Math.sin(rot);
+  return [x + (q[0] * c - q[1] * sn) * s, y + (q[0] * sn + q[1] * c) * s];
+};
+
+/* ---------- background ---------- */
+function bg(t, glow = 1, gx = W / 2, gy = H / 2) {
+  ctx.fillStyle = C.navy; ctx.fillRect(0, 0, W, H);
+  const r = ctx.createRadialGradient(gx, gy, 0, gx, gy, 900);
+  const pulse = 0.85 + 0.15 * Math.sin(t * 2.4);
+  r.addColorStop(0, rgb(C.blue, 0.22 * glow * pulse)); r.addColorStop(0.5, rgb(C.cyan, 0.05 * glow)); r.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = r; ctx.fillRect(0, 0, W, H);
+  // drifting specks
+  const rr = rng(5);
+  for (let i = 0; i < 90; i++) {
+    const x = (rr() * W + t * (8 + rr() * 20)) % W, y = (rr() * H - t * (10 + rr() * 30) + H * 4) % H, s = rr();
+    ctx.fillStyle = rgb(s > 0.5 ? C.cyan : C.white, 0.08 + 0.15 * s * (0.5 + 0.5 * Math.sin(t * 3 + i)));
+    circle(x, y, 1 + s * 1.6); ctx.fill();
+  }
+}
+
+/* ==========================================================================
+   LOCKUP layout (mark + wordmark), computed once fonts are ready
+   ========================================================================== */
+const L = {};
+function layout() {
+  L.ms = 0.42;                                   // mark scale
+  L.wm = { f: 'MS', w: 500, size: 82, ls: 44 };
+  L.ww = measure('AIMERISE', L.wm) - L.wm.ls;
+  const markW = 660 * L.ms, gap = 46;
+  const total = markW + gap + L.ww;
+  const x0 = (W - total) / 2;
+  L.mx = x0 + markW / 2; L.my = 505;
+  L.wx = x0 + markW + gap; L.wy = L.my + 10;
+  L.mk = { f: 'MS', w: 500, size: 19 };
+  const raw = measure('MARKETING', { ...L.mk, ls: 0 });
+  L.mk.ls = (L.ww * 0.8 - raw) / 8;
+}
+
+/* ==========================================================================
+   SCENE 1 · 0–2.5 · one year ago, we took aim — lines flow in, form the mark
+   ========================================================================== */
+function scene1(t) {
+  bg(t, p(t, 0.6, 2.0));
+  const draw = eo(p(t, 0.0, 1.0));
+  const m = eio(p(t, 0.85, 2.0));
+  const s = 0.82, rot = (1 - m) * -0.6;
+  drawLines((i, j) => {
+    const w = wavePt(i, j, t), l = toScreen(logoPt(i, j), W / 2, H / 2, s, rot);
+    return [lerp(w[0], l[0], m), lerp(w[1], l[1], m)];
+  }, { frac: draw, lw: 2.2 });
+  // lock-in pulse
+  if (t > 2.0) {
+    const k = p(t, 2.0, 2.6);
+    ctx.strokeStyle = rgb(C.cyan, (1 - k) * 0.8); ctx.lineWidth = 3 * (1 - k) + 0.5;
+    circle(W / 2, H / 2, lerp(200, 720, eo(k))); ctx.stroke();
+  }
+  const cap = { f: 'JM', size: 24, color: C.grey, ls: 8, align: 'center' };
+  reveal('ONE YEAR AGO, WE TOOK AIM.', W / 2, H - 120, cap, p(t, 0.3, 0.9), p(t, 2.2, 2.5));
+}
+
+/* ==========================================================================
+   SCENE 2 · 2.5–5.0 · 1 year · 365 days of aiming higher → zoom through
+   ========================================================================== */
+function scene2(t) {
+  const u = t - 2.5;
+  const move = eio(p(u, 0, 0.55));
+  const zoom = Math.pow(p(u, 2.05, 2.5), 2.6);
+  bg(t, 1, lerp(W / 2, 560, move), H / 2);
+  // hole centre of the mark, in mark space — we fly through it
+  const hole = [-56, 40];
+  let mx = lerp(W / 2, 560, move), my = H / 2, s = lerp(0.82, 0.7, move) * lerp(1, 26, zoom);
+  mx -= hole[0] * s * zoom * 1.0; my -= hole[1] * s * zoom * 1.0;
+  mx = lerp(mx, W / 2 - hole[0] * s, zoom); my = lerp(my, H / 2 - hole[1] * s, zoom);
+  const breathe = Math.sin(u * 2) * 0.03;
+  drawLines((i, j) => toScreen(logoPt(i, j), mx, my, s, breathe * (1 - zoom)), { lw: 2.2 * (1 + zoom * 4) });
+
+  const fade = 1 - p(u, 1.9, 2.2);
+  ctx.save(); ctx.globalAlpha = fade;
+  // giant outlined "1" drawing upward
+  const k1 = eo(p(u, 0.25, 0.9));
+  const ox = 1010, oy = 790;
+  ctx.save(); ctx.beginPath(); ctx.rect(ox - 50, oy - 640 * k1, 420, 640 * k1 + 60); ctx.clip();
+  text('1', ox, oy, { size: 640, w: 300, stroke: true, gradient: true, lw: 5 });
+  ctx.restore();
+  reveal('YEAR', 1340, 470, { size: 120, w: 600, ls: 30 }, p(u, 0.45, 0.95));
+  reveal('of aiming', 1345, 600, { f: 'IS', size: 110, color: C.white }, p(u, 0.6, 1.1));
+  reveal('higher.', 1345, 720, { f: 'IS', size: 110, gradient: true }, p(u, 0.7, 1.2));
+  // day counter
+  const day = Math.round(lerp(1, 365, eio(p(u, 0.3, 1.8))));
+  const ca = p(u, 0.3, 0.6);
+  text('DAY', 1345, 850, { f: 'JM', size: 26, color: C.grey, ls: 6, alpha: ca });
+  text(String(day).padStart(3, '0'), 1440, 850, { f: 'JM', size: 26, color: rgb(C.cyan), ls: 6, alpha: ca });
+  text('/ 365', 1530, 850, { f: 'JM', size: 26, color: C.grey, ls: 6, alpha: ca });
+  // progress bar
+  ctx.fillStyle = 'rgba(244,247,255,0.12)'; ctx.fillRect(1345, 880, 380, 3);
+  ctx.fillStyle = grad(1345, 1725); ctx.fillRect(1345, 880, 380 * (day / 365) * ca, 3);
+  ctx.restore();
+}
+
+/* ==========================================================================
+   SCENE 3 · 5.0–10.0 · THANK YOU — to every client, partner, teammate…
+   ========================================================================== */
+const MSo = { f: 'MS', w: 300, size: 74 };
+const ISo = { f: 'IS', size: 92, gradient: true };
+const THANKS = [
+  [['to every ', MSo], ['client', ISo], [' who trusted us,', MSo]],
+  [['every ', MSo], ['partner', ISo], [' who built with us,', MSo]],
+  [['every ', MSo], ['teammate', ISo], [' who made it happen,', MSo]],
+  [['and ', MSo], ['everyone', ISo], [' who rose with us.', MSo]],
+];
+function scene3(t) {
+  const u = t - 5;
+  bg(t, 0.8, W / 2, H * 0.45);
+  // ribbons flow behind, then turn vertical to rise into scene 4
+  const toRise = eio(p(t, 9.5, 10.2));
+  drawLines((i, j) => {
+    const w = wavePt(i, j, t, H * 0.78, 70), r = risePt(i, j, t);
+    return [lerp(w[0], r[0], toRise), lerp(w[1], r[1], toRise)];
+  }, { alpha: lerp(0.35, 0.75, toRise) * eo(p(u, 0, 0.5)), lw: 1.6, frac: eo(p(u, 0, 0.8)) });
+  // the "zoom-through" leaves a fading flash of the mark's colours
+  if (u < 0.35) { ctx.fillStyle = rgb(C.cyan, 0.25 * (1 - u / 0.35)); ctx.fillRect(0, 0, W, H); }
+
+  // "Thank you." — letters bloom in, then lift to make room
+  const lift = eio(p(u, 0.85, 1.25));
+  const ty = lerp(H / 2 + 90, 360, lift), ts = lerp(1, 0.62, lift);
+  const word = 'Thank you.';
+  const o = { f: 'IS', size: 300 };
+  const ww = measure(word, o);
+  ctx.save(); ctx.translate(W / 2, ty); ctx.scale(ts, ts);
+  let x = -ww / 2;
+  const exitAll = p(u, 4.55, 4.9);
+  word.split('').forEach((ch, i) => {
+    const k = eo(p(u, 0.05 + i * 0.045, 0.55 + i * 0.045));
+    const cw = measure(ch, o);
+    text(ch, x, (1 - k) * 60 - eio(exitAll) * 80, { ...o, color: i === 9 ? rgb(C.cyan) : C.white, alpha: k * (1 - exitAll) });
+    x += cw;
+  });
+  ctx.restore();
+  // gradient underline under "Thank you."
+  const ul = eo(p(u, 0.9, 1.5)) * (1 - exitAll);
+  ctx.fillStyle = grad(W / 2 - 300, W / 2 + 300); ctx.fillRect(W / 2 - 300 * ul, 410, 600 * ul, 3);
+
+  // the gratitude lines, one per bar-half (2 beats each)
+  THANKS.forEach((parts, i) => {
+    const t0 = 1.0 + i * 1.0;
+    const isLast = i === THANKS.length - 1;
+    runs(parts, W / 2, 640, p(u, t0, t0 + 0.45), isLast ? exitAll : p(u, t0 + 0.9, t0 + 1.1));
+  });
+  // little line-count dots
+  for (let i = 0; i < 4; i++) {
+    const active = u >= 1.0 + i && u < 2.0 + i;
+    ctx.fillStyle = active ? rgb(C.cyan) : 'rgba(244,247,255,0.2)';
+    circle(W / 2 - 45 + i * 30, 780, active ? 6 : 4); ctx.globalAlpha = p(u, 1.0, 1.3) * (1 - exitAll); ctx.fill(); ctx.globalAlpha = 1;
+  }
+}
+
+/* ==========================================================================
+   SCENE 4 · 10.0–12.5 · Year one was the aim. Now, we rise.
+   ========================================================================== */
+function scene4(t) {
+  const u = t - 10;
+  bg(t, 1, W / 2, H * 0.6);
+  const toLogo = eio(p(t, 12.15, 12.95));
+  drawLines((i, j) => {
+    const r = risePt(i, j, t), l = toScreen(logoPt(i, j), L.mx, L.my, L.ms, (1 - toLogo) * 0.8);
+    return [lerp(r[0], l[0], toLogo), lerp(r[1], l[1], toLogo)];
+  }, { alpha: lerp(0.75, 1, toLogo) * (u < 1.25 ? 0.45 : 0.8), lw: lerp(1.6, 2, toLogo) });
+
+  const a = { f: 'MS', w: 300, size: 96 };
+  const ex1 = p(u, 1.05, 1.25);
+  runs([['Year one was the ', a], ['aim.', { f: 'IS', size: 124, gradient: true }]], W / 2, H / 2 + 30, p(u, 0.05, 0.55), ex1);
+  // "Now, we rise." — climbs as it appears
+  const k = p(u, 1.25, 1.75);
+  const ex2 = p(u, 2.0, 2.35);
+  const climb = -eo(p(u, 1.25, 2.3)) * 40;
+  runs([['Now, we ', { f: 'IS', size: 210, color: C.white }], ['rise.', { f: 'IS', size: 210, gradient: true }]], W / 2, H / 2 + 75 + climb, k, ex2);
+  // sparks shooting upward on "rise"
+  if (u > 1.25) {
+    const r = rng(9);
+    for (let i = 0; i < 40; i++) {
+      const st = 1.25 + r() * 0.8, life = p(u, st, st + 0.9);
+      if (life <= 0 || life >= 1) continue;
+      const x = W / 2 + (r() - 0.5) * 900, y0 = H * 0.8 + r() * 200, len = 30 + r() * 60;
+      const y = y0 - eo(life) * (500 + r() * 300);
+      ctx.strokeStyle = rgb(r() > 0.5 ? C.cyan : C.blue, (1 - life) * 0.9); ctx.lineWidth = 2;
+      line(x, y, x, y + len);
+    }
+  }
+}
+
+/* ==========================================================================
+   SCENE 5 · 12.5–15 · lockup · CELEBRATING 1 YEAR · Thank you, everyone.
+   ========================================================================== */
+const CONFETTI = (() => {
+  const r = rng(21), a = [];
+  for (let i = 0; i < 150; i++) {
+    const ang = -Math.PI / 2 + (r() - 0.5) * Math.PI * 1.5, sp = 600 + r() * 1100;
+    a.push({ vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, len: 14 + r() * 26, rot: r() * TAU, vr: (r() - 0.5) * 16, col: mix(C.blue, C.cyan, r()), white: r() < 0.18, delay: r() * 0.12 });
+  }
+  return a;
+})();
+function scene5(t) {
+  const u = t - 12.5;
+  bg(t, 1.1, W / 2, L.my);
+  // mark (finishing its form from scene 4, then breathing)
+  const toLogo = eio(p(t, 12.15, 12.95));
+  drawLines((i, j) => {
+    const r = risePt(i, j, t), l = toScreen(logoPt(i, j), L.mx, L.my, L.ms * (1 + 0.012 * Math.sin(u * 3) * toLogo), (1 - toLogo) * 0.8);
+    return [lerp(r[0], l[0], toLogo), lerp(r[1], l[1], toLogo)];
+  }, { lw: 2 });
+  // confetti burst from the mark on the downbeat
+  CONFETTI.forEach(c => {
+    const d = u - c.delay; if (d <= 0) return;
+    const x = L.mx + c.vx * d * Math.exp(-d * 1.4) * 0.9, y = L.my + c.vy * d * Math.exp(-d * 1.4) * 0.9 + 260 * d * d;
+    const a = clamp(1 - (d - 1.4) / 0.9);
+    if (a <= 0) return;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(c.rot + c.vr * d);
+    ctx.strokeStyle = c.white ? `rgba(244,247,255,${a})` : rgb(c.col, a); ctx.lineWidth = 3; ctx.lineCap = 'round';
+    line(-c.len / 2, 0, c.len / 2, 0); ctx.restore();
+  });
+  // wordmark — letters settle from wide tracking (white fill, grey outline, as in the logo)
+  const kw = eo(p(u, 0.25, 1.0));
+  const extra = (1 - kw) * 40;
+  let x = L.wx;
+  'AIMERISE'.split('').forEach((ch, i) => {
+    const ki = eo(p(u, 0.25 + i * 0.04, 0.75 + i * 0.04));
+    const o = { ...L.wm, ls: 0 };
+    text(ch, x + i * extra, L.wy, { ...o, color: C.white, alpha: ki });
+    text(ch, x + i * extra, L.wy, { ...o, stroke: 'rgba(120,130,150,0.9)', lw: 1.4, alpha: ki });
+    x += measure(ch, o) + L.wm.ls;
+  });
+  // MARKETING
+  const km = p(u, 0.6, 1.1);
+  text('MARKETING', L.wx + 4, L.wy + 66, { ...L.mk, color: C.white, alpha: km * 0.85 });
+  // light sweep over the wordmark
+  const sw = p(u, 1.2, 1.8);
+  if (sw > 0 && sw < 1) {
+    const sx = lerp(L.wx - 300, L.wx + L.ww + 300, eio(sw));
+    // draw the sweep as gradient text overlay (clipped to letters by redrawing them)
+    ctx.save(); ctx.beginPath(); ctx.rect(sx - 120, L.wy - 90, 240, 120); ctx.clip();
+    let x2 = L.wx;
+    'AIMERISE'.split('').forEach(ch => { text(ch, x2, L.wy, { ...L.wm, ls: 0, color: rgb(C.cyan, 0.85) }); x2 += measure(ch, { ...L.wm, ls: 0 }) + L.wm.ls; });
+    ctx.restore();
+  }
+  // CELEBRATING 1 YEAR pill
+  const kp = back(p(u, 0.1, 0.5));
+  if (kp > 0) {
+    const label = 'CELEBRATING  1  YEAR';
+    const lo = { f: 'JM', size: 22, ls: 7 };
+    const lw = measure(label, lo) + 70;
+    ctx.save(); ctx.translate(W / 2, 270); ctx.scale(kp, kp);
+    ctx.beginPath(); ctx.roundRect(-lw / 2, -30, lw, 60, 30);
+    ctx.strokeStyle = grad(-lw / 2, lw / 2); ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = 'rgba(26,109,255,0.08)'; ctx.fill();
+    text(label, 3, 8, { ...lo, align: 'center', color: C.white });
+    ctx.restore();
+  }
+  // Thank you, everyone.
+  runs([['Thank you, ', { f: 'IS', size: 104, color: C.white }], ['everyone.', { f: 'IS', size: 104, gradient: true }]], W / 2, 800, p(u, 0.7, 1.2));
+  const fa = p(u, 1.1, 1.5);
+  text('KOCHI  ·  THRISSUR   —   AIMERISEMARKETING.COM', W / 2, 950, { f: 'JM', size: 20, color: C.grey, ls: 6, align: 'center', alpha: fa });
+}
+
+/* ==========================================================================
+   compositor
+   ========================================================================== */
+function renderScene(t) {
+  ctx.save();
+  // tiny impact shake on the big downbeats
+  let sx = 0, sy = 0;
+  for (const [ti, amp] of [[2.0, 6], [5.0, 6], [12.5, 10]]) {
+    const d = t - ti; if (d < 0 || d > 0.3) continue;
+    const a = amp * Math.pow(1 - d / 0.3, 2); sx += Math.sin(d * 90) * a; sy += Math.cos(d * 70) * a;
+  }
+  ctx.translate(sx, sy);
+  if (t < 2.5) scene1(t);
+  else if (t < 5.0) scene2(t);
+  else if (t < 10.0) scene3(t);
+  else if (t < 12.5) scene4(t);
+  else scene5(t);
+  ctx.restore();
+}
+const GRAIN = [0, 1, 2, 3].map(s => {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d'), d = g.createImageData(256, 256), r = rng(100 + s);
+  for (let i = 0; i < d.data.length; i += 4) { const v = r() * 255; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; d.data[i + 3] = 18; }
+  g.putImageData(d, 0, 0); return c;
+});
+function finish(t, frame) {
+  const v = octx.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 1.05);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,8,0.5)');
+  octx.fillStyle = v; octx.fillRect(0, 0, W, H);
+  octx.save(); octx.globalCompositeOperation = 'overlay';
+  octx.fillStyle = octx.createPattern(GRAIN[frame % 4], 'repeat');
+  octx.translate((frame * 37) % 256, (frame * 91) % 256); octx.fillRect(-256, -256, W + 512, H + 512);
+  octx.restore();
+  // corner marks + small edition tag
+  octx.save(); octx.strokeStyle = 'rgba(244,247,255,0.28)'; octx.lineWidth = 2;
+  for (const [x, y, sx, sy] of [[40, 40, 1, 1], [W - 40, 40, -1, 1], [W - 40, H - 40, -1, -1], [40, H - 40, 1, -1]]) {
+    octx.beginPath(); octx.moveTo(x, y + sy * 22); octx.lineTo(x, y); octx.lineTo(x + sx * 22, y); octx.stroke();
+  }
+  octx.font = '500 15px JM'; octx.fillStyle = 'rgba(244,247,255,0.4)'; octx.letterSpacing = '5px';
+  octx.textAlign = 'left'; octx.fillText('AIMERISE MARKETING', 76, 62);
+  octx.textAlign = 'right'; octx.fillText('YEAR ONE · THANK YOU', W - 76, 62);
+  octx.restore();
+}
+function renderFrame(frame, subs = 4) {
+  const t = frame / FPS;
+  octx.globalAlpha = 1; octx.fillStyle = C.navy; octx.fillRect(0, 0, W, H);
+  for (let i = 0; i < subs; i++) {
+    const st = Math.min(DURATION - 1e-4, t + (i / subs) * (0.5 / FPS));
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+    renderScene(st);
+    octx.globalAlpha = 1 / (i + 1); octx.drawImage(scratch, 0, 0);
+  }
+  octx.globalAlpha = 1;
+  finish(t, frame);
+}
+
+window.ready = Promise.all([
+  document.fonts.load('300 40px MS'), document.fonts.load('500 40px MS'), document.fonts.load('600 40px MS'),
+  document.fonts.load('italic 400 40px IS'), document.fonts.load('500 40px JM'),
+]).then(() => { layout(); return true; });
+window.renderFrame = renderFrame;
+window.FRAMES = FPS * DURATION;
+
+if (!navigator.webdriver) {
+  window.ready.then(() => {
+    const t0 = performance.now();
+    const loop = () => { renderFrame(Math.floor((((performance.now() - t0) / 1000) % DURATION) * FPS), 1); requestAnimationFrame(loop); };
+    loop();
+  });
+}
+</script>
+</body>
+</html>
